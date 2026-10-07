@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     max_concurrency: int = 2
     default_limit: int = 100
     headless_browser: bool = True
+    scraper_browser_headless: bool = True
     browser_user_agent: str = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -39,6 +40,6 @@ class Settings(BaseSettings):
     default_page_size: int = 50
     max_page_size: int = 200
 
-    model_config = {"env_file": ".env", "extra": "allow"}
+    model_config = {"env_file": ".env", "extra": "ignore"}
 
 settings = Settings()

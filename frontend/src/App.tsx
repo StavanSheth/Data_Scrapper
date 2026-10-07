@@ -17,6 +17,7 @@ export const App: React.FC = () => {
     activeRun,
     setActiveRun,
     isHealthy,
+    error: runsError,
     loadRuns,
     createNewRun,
     cancelActiveRun,
@@ -34,6 +35,7 @@ export const App: React.FC = () => {
     sortOrder,
     handleSort,
     loading: tableLoading,
+    error: businessesError,
     reload: reloadBusinesses,
     inspectedBusiness,
     setInspectedBusiness,
@@ -80,6 +82,11 @@ export const App: React.FC = () => {
       />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {(runsError || businessesError) && (
+          <div className="mb-6 p-4 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-sm flex items-center justify-between">
+            <span>{runsError || businessesError}</span>
+          </div>
+        )}
         {activeRun ? (
           <div>
             {/* Back button */}

@@ -99,17 +99,25 @@ class GoogleMapsScraper:
                         if cancel_check and cancel_check():
                             break
 
-                        try:
-                            href = await link.get_attribute("href")
-                            if not href or href in seen_urls:
-                                continue
-                            seen_urls.add(href)
+                        # Explicit per-record variables to prevent stale state leakage across iterations
+                        current_href: Optional[str] = None
+                        current_place_id: Optional[str] = None
+                        current_lat: Optional[float] = None
+                        current_lon: Optional[float] = None
+                        current_name: str = "Unknown"
+                        current_card_lines: list[str] = []
 
-                            place_id, lat, lon = self.parser.extract_place_id_and_coords(href)
-                            if place_id and place_id in seen_place_ids:
+                        try:
+                            current_href = await link.get_attribute("href")
+                            if not current_href or current_href in seen_urls:
                                 continue
-                            if place_id:
-                                seen_place_ids.add(place_id)
+                            seen_urls.add(current_href)
+
+                            current_place_id, current_lat, current_lon = self.parser.extract_place_id_and_coords(current_href)
+                            if current_place_id and current_place_id in seen_place_ids:
+                                continue
+                            if current_place_id:
+                                seen_place_ids.add(current_place_id)
 
                             # Multi-strategy raw card extraction with upward DOM resilience
                             card_parent = await link.evaluate_handle('''el => {
@@ -124,15 +132,15 @@ class GoogleMapsScraper:
                             }''')
                             card_text = await card_parent.inner_text() if card_parent else ""
                             card_html = await card_parent.inner_html() if card_parent else ""
-                            card_lines = [l.strip() for l in card_text.split("\n") if l.strip()]
+                            current_card_lines = [l.strip() for l in card_text.split("\n") if l.strip()]
 
-                            card_info = self.parser.parse_card_lines(card_lines, default_category=category)
+                            card_info = self.parser.parse_card_lines(current_card_lines, default_category=category)
                             aria_name = await link.get_attribute("aria-label")
-                            business_name = aria_name or card_info.get("name") or "Unknown"
+                            current_name = aria_name or card_info.get("name") or "Unknown"
 
                             # Detail extraction directly from card container without mutating page state
-                            phone, phone_strat = await self._extract_phone(card_parent, card_lines, card_info.get("phone"))
-                            address, addr_strat = await self._extract_address(card_parent, card_lines, card_info.get("address"))
+                            phone, phone_strat = await self._extract_phone(card_parent, current_card_lines, card_info.get("phone"))
+                            address, addr_strat = await self._extract_address(card_parent, current_card_lines, card_info.get("address"))
                             website, web_strat = await self._extract_website(card_parent, link)
                             rating, review_count = await self._extract_metrics(card_parent, card_info)
                             opening_hours = card_info.get("opening_hours")
@@ -142,7 +150,7 @@ class GoogleMapsScraper:
                                 "query": query,
                                 "city": city,
                                 "category": category,
-                                "card_lines": card_lines[:10],
+                                "card_lines": current_card_lines[:10],
                                 "raw_card_html_sample": card_html[:1500] if card_html else "",
                                 "extraction_strategies": {
                                     "phone": phone_strat,
@@ -153,8 +161,8 @@ class GoogleMapsScraper:
                             }
 
                             raw_record = RawGoogleRecord(
-                                place_id=place_id,
-                                name=business_name,
+                                place_id=current_place_id,
+                                name=current_name,
                                 category=card_info.get("category") or category,
                                 address=address,
                                 phone=phone,
@@ -162,9 +170,9 @@ class GoogleMapsScraper:
                                 rating=rating,
                                 review_count=review_count,
                                 opening_hours=opening_hours,
-                                profile_url=href,
-                                latitude=lat,
-                                longitude=lon,
+                                profile_url=current_href,
+                                latitude=current_lat,
+                                longitude=current_lon,
                                 status="SUCCESS",
                                 raw_payload=raw_payload,
                             )
@@ -176,22 +184,22 @@ class GoogleMapsScraper:
                             # A failed record must NEVER be silently discarded
                             logger.warning(
                                 "Failed extracting place record at url %s: %s",
-                                href if 'href' in locals() else 'unknown',
+                                current_href or "unknown",
                                 exc,
                                 exc_info=True,
                             )
                             count_yielded += 1
                             yield RawGoogleRecord(
-                                place_id=place_id if 'place_id' in locals() else None,
-                                name=business_name if ('business_name' in locals() and business_name != "Unknown") else "Failed Extraction",
+                                place_id=current_place_id,
+                                name=current_name if current_name != "Unknown" else "Failed Extraction",
                                 category=category,
                                 status="EXTRACTION_FAILED",
                                 raw_payload={
                                     "error": str(exc),
-                                    "profile_url": href if 'href' in locals() else None,
-                                    "card_lines": card_lines if 'card_lines' in locals() else [],
+                                    "profile_url": current_href,
+                                    "card_lines": current_card_lines,
                                 },
-                                profile_url=href if 'href' in locals() else None,
+                                profile_url=current_href,
                             )
 
                     # Scroll feed to load more places

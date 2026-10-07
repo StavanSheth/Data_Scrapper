@@ -53,13 +53,19 @@ class RunService:
         return self.run_repo.create(run)
 
     def start_run(self, run_id: str) -> RunModel:
-        """Transitions run to QUEUED and launches background scraping task."""
+        """Transitions newly created run to QUEUED and launches background scraping task."""
         run = self.run_repo.get_by_id(run_id)
         if not run:
             raise ValueError(f"Run {run_id} not found.")
 
         if run.status in ["RUNNING", "QUEUED"]:
             return run
+
+        if run.status != "CREATED":
+            raise ValueError(
+                f"Cannot start run in '{run.status}' state. "
+                f"Use POST /api/runs/{run_id}/resume to resume or create a new run."
+            )
 
         # Transition to QUEUED
         self.run_repo.update_status(run_id, status="QUEUED")
@@ -85,6 +91,9 @@ class RunService:
 
         if run.status in ["RUNNING", "QUEUED"]:
             return run
+
+        if run.status not in ["INTERRUPTED", "FAILED", "CANCELLED", "CREATED"]:
+            raise ValueError(f"Cannot resume run in '{run.status}' state.")
 
         # ponytail: Checkpoint reconstruction from SQLite source records across process crashes, upgrade trigger: distributed persistent browser session / remote CDP worker pool.
         self.run_repo.update_status(run_id, status="QUEUED", error_message=None)

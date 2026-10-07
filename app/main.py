@@ -32,62 +32,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from fastapi.exceptions import RequestValidationError
-from fastapi import HTTPException
-from fastapi.responses import JSONResponse
+from app.api.errors import register_exception_handlers
+from app.api.routes.websocket import router as ws_router
 
-# Mount API routes
+# Register global exception handlers
+register_exception_handlers(app)
+
+# Mount API and WebSocket routers
 app.include_router(api_router, prefix=settings.api_prefix)
-
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request, exc: HTTPException):
-    code_map = {400: "BAD_REQUEST", 404: "NOT_FOUND", 409: "CONFLICT", 422: "UNPROCESSABLE_ENTITY", 500: "SERVER_ERROR"}
-    code = code_map.get(exc.status_code, f"HTTP_{exc.status_code}")
-    msg = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "error": {"code": code, "message": msg},
-            "detail": msg,
-        },
-    )
-
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request, exc: RequestValidationError):
-    return JSONResponse(
-        status_code=422,
-        content={
-            "error": {
-                "code": "VALIDATION_ERROR",
-                "message": "Invalid request parameters or payload",
-                "details": exc.errors(),
-            },
-            "detail": exc.errors(),
-        },
-    )
-
-# WebSocket endpoint for real-time run progress
-@app.websocket("/ws/runs/{run_id}")
-async def websocket_run_endpoint(websocket: WebSocket, run_id: str):
-    await websocket.accept()
-
-    async def send_event(data: dict):
-        try:
-            await websocket.send_text(json.dumps(data))
-        except Exception:
-            pass
-
-    register_ws_listener(run_id, send_event)
-    try:
-        while True:
-            # Keep connection open; receive ping/messages if any
-            _ = await websocket.receive_text()
-    except WebSocketDisconnect:
-        pass
-    except Exception:
-        pass
-    finally:
-        unregister_ws_listener(run_id, send_event)
+app.include_router(ws_router)
 
 if __name__ == "__main__":
     import uvicorn

@@ -121,7 +121,7 @@ def get_run_businesses(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     search: Optional[str] = Query(None, description="Search term across name, address, phone"),
-    sort_by: str = Query("created_at", description="Field to sort by"),
+    sort_by: str = Query("created_at", pattern="^(created_at|name|rating|review_count|city|category|updated_at)$", description="Field to sort by"),
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     run_service: RunService = Depends(get_run_service),
 ):

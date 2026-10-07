@@ -16,15 +16,19 @@ export function useBusinesses(activeRunId?: string) {
   const [sortBy, setSortBy] = useState('created_at');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [inspectedBusiness, setInspectedBusiness] = useState<Business | null>(null);
 
   const load = useCallback(async () => {
     if (!activeRunId) return;
     try {
       setLoading(true);
+      setError(null);
       const res = await fetchBusinesses(activeRunId, page, pageSize, search, sortBy, sortOrder);
       setData(res);
-    } catch (err) {
+    } catch (err: any) {
+      const msg = err?.message || 'Failed to load businesses';
+      setError(msg);
       console.error('Failed to load businesses:', err);
     } finally {
       setLoading(false);
@@ -62,6 +66,7 @@ export function useBusinesses(activeRunId?: string) {
     sortOrder,
     handleSort,
     loading,
+    error,
     reload: load,
     inspectedBusiness,
     setInspectedBusiness,

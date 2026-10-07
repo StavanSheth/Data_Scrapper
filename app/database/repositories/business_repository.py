@@ -3,6 +3,7 @@
 from typing import Optional, List, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, desc, asc
+from sqlalchemy.exc import IntegrityError
 from app.database.models import BusinessModel, FieldProvenanceModel
 
 class BusinessRepository:
@@ -19,15 +20,21 @@ class BusinessRepository:
         self,
         business: BusinessModel,
         provenances: List[FieldProvenanceModel]
-    ) -> BusinessModel:
-        self.db.add(business)
-        self.db.flush()
-        for p in provenances:
-            p.business_id = business.id
-            self.db.add(p)
-        self.db.commit()
-        self.db.refresh(business)
-        return business
+    ) -> Optional[BusinessModel]:
+        try:
+            self.db.add(business)
+            self.db.flush()
+            for p in provenances:
+                p.business_id = business.id
+                self.db.add(p)
+            self.db.commit()
+            self.db.refresh(business)
+            return business
+        except IntegrityError:
+            self.db.rollback()
+            if business.google_place_id:
+                return self.get_by_google_place_id(business.run_id, business.google_place_id)
+            return None
 
     def get_by_id(self, business_id: str) -> Optional[BusinessModel]:
         return self.db.query(BusinessModel).filter(BusinessModel.id == business_id).first()

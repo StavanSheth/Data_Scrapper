@@ -12,9 +12,21 @@ export function useRunMonitor(
   useEffect(() => {
     if (!activeRun) return;
 
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const defaultWsBase = `${wsProtocol}//${window.location.host}/ws`;
-    const wsBase = import.meta.env.VITE_WS_BASE_URL || defaultWsBase;
+    let wsBase = import.meta.env.VITE_WS_BASE_URL;
+    if (!wsBase) {
+      const apiBase = import.meta.env.VITE_API_BASE_URL;
+      if (apiBase && (apiBase.startsWith('http://') || apiBase.startsWith('https://'))) {
+        wsBase = apiBase.replace(/^http/, 'ws').replace(/\/api\/?$/, '') + '/ws';
+      } else if (window.location.port === '5173') {
+        // Direct local development mode where backend runs on port 8000
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        wsBase = `${wsProtocol}//${window.location.hostname}:8000/ws`;
+      } else {
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        wsBase = `${wsProtocol}//${window.location.host}/ws`;
+      }
+    }
+
     const wsUrl = `${wsBase}/runs/${activeRun.id}`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;

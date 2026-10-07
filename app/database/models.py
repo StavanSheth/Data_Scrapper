@@ -82,6 +82,7 @@ class BusinessModel(Base):
         Index("ix_businesses_run_name", "run_id", "normalized_name"),
         Index("ix_businesses_run_created", "run_id", "created_at"),
         Index("ix_businesses_run_city", "run_id", "city"),
+        Index("uq_businesses_run_place_id", "run_id", "google_place_id", unique=True, sqlite_where=Column("google_place_id").is_not(None)),
     )
 
     id = Column(String, primary_key=True, index=True)

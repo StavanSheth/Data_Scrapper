@@ -143,7 +143,7 @@ class RunWorker:
                     discovered += 1
                     source_record_id = f"src_{uuid.uuid4().hex[:12]}"
 
-                    # 1. Store Source Record (Raw Data Retention)
+                    # Atomic persistence: store source record, business entity, provenances, and progress counts in one transaction
                     with get_db_context() as db:
                         src_repo = SourceRecordRepository(db)
                         src_model = SourceRecordModel(
@@ -169,27 +169,26 @@ class RunWorker:
                         )
                         src_repo.create(src_model)
 
-                    if raw_record.status == "EXTRACTION_FAILED":
-                        failed += 1
-                        logger.warning(
-                            "Scraper-level extraction failure for run %s: %s",
-                            run_id,
-                            raw_record.raw_payload.get("error") if raw_record.raw_payload else "Unknown scraper error",
-                        )
-                    else:
-                        # 2. Normalize and Validate
-                        business, provenances, val_errors = self.validation_service.process_raw_record(
-                            raw=raw_record,
-                            run_id=run_id,
-                            source_record_id=source_record_id,
-                            default_city=city,
-                        )
-
-                        if not business or val_errors:
+                        if raw_record.status == "EXTRACTION_FAILED":
                             failed += 1
+                            logger.warning(
+                                "Scraper-level extraction failure for run %s: %s",
+                                run_id,
+                                raw_record.raw_payload.get("error") if raw_record.raw_payload else "Unknown scraper error",
+                            )
                         else:
-                            # 3. Deduplication Check and Save
-                            with get_db_context() as db:
+                            # 2. Normalize and Validate
+                            business, provenances, val_errors = self.validation_service.process_raw_record(
+                                raw=raw_record,
+                                run_id=run_id,
+                                source_record_id=source_record_id,
+                                default_city=city,
+                            )
+
+                            if not business or val_errors:
+                                failed += 1
+                            else:
+                                # 3. Deduplication Check and Save (enforced at app and DB levels)
                                 biz_repo = BusinessRepository(db)
                                 duplicate = biz_repo.find_duplicate(
                                     run_id=run_id,
@@ -237,14 +236,17 @@ class RunWorker:
                                         created_at=business.created_at,
                                         updated_at=business.updated_at,
                                     )
-                                    biz_repo.create_with_provenances(biz_model, provenances)
-                                    saved += 1
+                                    created_biz = biz_repo.create_with_provenances(biz_model, provenances)
+                                    if created_biz and created_biz.id == business.business_id:
+                                        saved += 1
+                                    else:
+                                        # Duplicate caught by DB unique constraint
+                                        pass
                                 else:
-                                    # Already exists in current run, counted as processed
+                                    # Already exists in current run
                                     pass
 
-                    # Update run progress counts in SQLite
-                    with get_db_context() as db:
+                        # Update run progress counts in SQLite atomically within same transaction
                         run_repo = RunRepository(db)
                         run_repo.update_counts(
                             run_id=run_id,

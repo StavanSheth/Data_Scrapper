@@ -7,13 +7,17 @@ export function useRuns() {
   const [activeRun, setActiveRun] = useState<Run | null>(null);
   const [isHealthy, setIsHealthy] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const loadRuns = useCallback(async () => {
     try {
       setLoading(true);
+      setError(null);
       const data = await fetchRuns();
       setRuns(data);
-    } catch (err) {
+    } catch (err: any) {
+      const msg = err?.message || 'Failed to load runs';
+      setError(msg);
       console.error('Failed to load runs:', err);
     } finally {
       setLoading(false);
@@ -54,6 +58,7 @@ export function useRuns() {
     setActiveRun,
     isHealthy,
     loading,
+    error,
     loadRuns,
     createNewRun,
     cancelActiveRun,
