@@ -31,16 +31,19 @@ from app.database.migrations.runner import MigrationRunner
 def init_db():
     """
     Initializes database schema and executes any pending versioned migrations.
-    Provides formal, transaction-safe schema evolution across all slices.
+    Migrations run first to ensure schema versions and history are authoritative.
     """
-    Base.metadata.create_all(bind=engine)
+    # Migration runner executes versioned schema migrations as the source of truth
     applied = MigrationRunner.run_pending(engine)
     return applied
 
 def get_schema_version() -> int:
     """Returns the current applied schema version."""
     with engine.connect() as conn:
-        res = conn.execute(text("SELECT MAX(version) FROM schema_version")).scalar()
-        return res or 0
+        try:
+            res = conn.execute(text("SELECT MAX(version) FROM schema_version")).scalar()
+            return res or 0
+        except Exception:
+            return 0
 
 

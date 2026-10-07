@@ -86,11 +86,11 @@ class RunRepository:
             return True
         return run.status == "CANCELLED" or run.cancelled_at is not None
 
-    def recover_stale_runs(self, message: str = "Interrupted by system restart") -> int:
-        """Finds orphaned RUNNING or QUEUED runs upon startup and marks them FAILED."""
+    def recover_stale_runs(self, message: str = "Execution was interrupted by process restart. Ready to resume from SQLite checkpoint.") -> int:
+        """Finds orphaned RUNNING or QUEUED runs upon startup and marks them INTERRUPTED for checkpoint resumption."""
         stale = self.db.query(RunModel).filter(RunModel.status.in_(["RUNNING", "QUEUED"])).all()
         for r in stale:
-            r.status = "FAILED"
+            r.status = "INTERRUPTED"
             r.error_message = message
         if stale:
             self.db.commit()

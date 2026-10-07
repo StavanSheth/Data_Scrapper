@@ -86,6 +86,24 @@ async def start_run(
             detail="An internal server error occurred while starting the scraping run.",
         )
 
+@router.post("/{run_id}/resume", response_model=RunResponse)
+async def resume_run(
+    run_id: str,
+    run_service: RunService = Depends(get_run_service),
+):
+    """Resume an interrupted or stopped scraping run from its persistent checkpoint."""
+    try:
+        run = run_service.resume_run(run_id)
+        return run
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to resume run {run_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="An internal server error occurred while resuming the scraping run.",
+        )
+
 @router.post("/{run_id}/cancel", response_model=RunResponse)
 async def cancel_run(
     run_id: str,

@@ -174,6 +174,20 @@ class NormalizationService:
         "ap": "Andhra Pradesh",
     }
 
+    MAJOR_INDIAN_CITIES = {
+        "mumbai", "delhi", "new delhi", "bengaluru", "bangalore", "hyderabad",
+        "chennai", "kolkata", "pune", "ahmedabad", "jaipur", "surat", "lucknow",
+        "kanpur", "nagpur", "indore", "thane", "bhopal", "visakhapatnam", "vadodara",
+        "ghaziabad", "ludhiana", "agra", "nashik", "faridabad", "meerut", "rajkot",
+        "varanasi", "srinagar", "aurangabad", "dhanbad", "amritsar", "navi mumbai",
+        "allahabad", "prayagraj", "howrah", "ranchi", "gwalior", "jabalpur",
+        "coimbatore", "vijayawada", "jodhpur", "madurai", "raipur", "kota",
+        "chandigarh", "guwahati", "solapur", "hubli", "dharwad", "bareilly",
+        "moradabad", "mysore", "gurugram", "gurgaon", "noida", "aligarh", "jalandhar",
+        "tiruchirappalli", "bhubaneswar", "salem", "warangal", "thiruvananthapuram",
+        "kochi", "dehradun"
+    }
+
     # Generic morphological and administrative division tokens valid across all Indian states/cities
     GENERIC_LOCALITY_TOKENS = (
         "nagar", "colony", "layout", "enclave", "extension", "extn", "sector",
@@ -186,7 +200,7 @@ class NormalizationService:
     )
 
     THOROUGHFARE_TOKENS = (
-        "road", "rd", "marg", "street", "st", "lane", "gali", "cross", "highway", "path", "flyover"
+        "road", "rd", "marg", "street", "st", "lane", "gali", "cross", "main road", "highway", "path", "flyover"
     )
 
     @classmethod
@@ -194,9 +208,9 @@ class NormalizationService:
         """
         Parse raw Indian address string into structured components:
         street, locality, city, state, postal_code, country.
-        Robust to multi-part premises, unformatted landmarks, and missing fields.
+        Robust to multi-part premises, unpunctuated single lines, landmarks, and diverse delimiters.
         """
-        # ponytail: Indian address parsing uses deterministic morphological tokens and hierarchical postal tail heuristics; upgrade trigger: Slice 3 address enrichment or libpostal binding.
+        # ponytail: Indian address parsing uses deterministic morphological tokens, thoroughfare splitting, and hierarchical postal tail heuristics; upgrade trigger: Slice 3 address enrichment or libpostal binding.
         result: Dict[str, Optional[str]] = {
             "street": None,
             "locality": None,
@@ -210,8 +224,8 @@ class NormalizationService:
             return result
 
         raw = address.strip()
-        # Clean prefix like "Address: "
-        raw = re.sub(r"(?i)^(address|addr)[\s:]*", "", raw).strip()
+        # Clean common label prefixes
+        raw = re.sub(r"(?i)^(address|addr|loc|location)[\s:]*", "", raw).strip()
 
         # 1. Extract 6-digit Indian PIN code
         pin_match = re.search(r"\b([1-9][0-9]{5})\b", raw)
@@ -224,23 +238,27 @@ class NormalizationService:
                 result["state"] = canonical_state
                 break
 
-        # 3. Detect City
+        # 3. Detect City from default or known catalog
         clean_no_pin = re.sub(r"\b[1-9][0-9]{5}\b", "", raw)
         if default_city and re.search(rf"\b{re.escape(default_city)}\b", clean_no_pin, re.IGNORECASE):
             result["city"] = default_city
+        else:
+            for city_candidate in cls.MAJOR_INDIAN_CITIES:
+                if re.search(rf"\b{re.escape(city_candidate)}\b", clean_no_pin, re.IGNORECASE):
+                    result["city"] = city_candidate.title()
+                    break
 
-        # 4. Split segments and coalesce numerical subparts (e.g., "Shop No. 3", "4", "5")
-        raw_parts = [p.strip() for p in raw.split(",") if p.strip()]
+        # 4. Split segments across varied Indian delimiters (commas, newlines, pipes, semicolons, dashes)
+        raw_parts = [p.strip() for p in re.split(r"[,\n|;]|(?:\s+[-–—]\s+)", raw) if p.strip()]
         coalesced_parts: list[str] = []
         for p in raw_parts:
-            # If current part is just a lone digit or range (e.g. "4", "5", "4 & 5")
-            # coalesce with previous segment
+            # If current part is just a lone digit, unit range, or floor, coalesce with previous segment
             if coalesced_parts and re.match(r"^[\d\s&\-\/]+$", p):
                 coalesced_parts[-1] = f"{coalesced_parts[-1]}, {p}"
             else:
                 coalesced_parts.append(p)
 
-        # 5. Filter out components that only contain PIN, state, or country
+        # 5. Filter out components that only contain PIN, state, country, or standalone city
         content_parts: list[str] = []
         for part in coalesced_parts:
             p_clean = part.strip()
@@ -256,13 +274,20 @@ class NormalizationService:
             # If part contains state + PIN (e.g. "Maharashtra 400081")
             if result["state"] and re.search(rf"(?i){re.escape(result['state'])}", p_clean):
                 p_sub = re.sub(rf"(?i){re.escape(result['state'])}", "", p_clean)
-                p_sub = re.sub(r"\b[1-9][0-9]{5}\b", "", p_sub).strip()
+                p_sub = re.sub(r"\b[1-9][0-9]{5}\b", "", p_sub).strip(" -,\n")
                 if not p_sub:
                     continue
                 p_clean = p_sub
             # If part is solely the city name
             if result["city"] and re.fullmatch(rf"(?i){re.escape(result['city'])}", p_clean):
                 continue
+            # If part contains city + PIN (e.g. "Mumbai 400053" or "Delhi - 110001")
+            if result["city"] and re.search(rf"(?i)\b{re.escape(result['city'])}\b", p_clean):
+                p_sub = re.sub(rf"(?i)\b{re.escape(result['city'])}\b", "", p_clean)
+                p_sub = re.sub(r"\b[1-9][0-9]{5}\b", "", p_sub).strip(" -,\n")
+                if not p_sub:
+                    continue
+                p_clean = p_sub
             content_parts.append(p_clean)
 
         # If city was not determined yet, try taking candidate from penultimate parts
@@ -275,20 +300,34 @@ class NormalizationService:
         # 6. Assign Street and Locality intelligently
         if len(content_parts) == 1:
             part = content_parts[0]
-            is_thoroughfare = any(ind in part.lower() for ind in cls.THOROUGHFARE_TOKENS)
-            is_premise = bool(re.search(r"\b(shop|flat|building|plot|floor|no\.)\b", part, re.IGNORECASE))
-            if is_thoroughfare or is_premise:
-                result["street"] = part
-            elif any(ind in part.lower() for ind in cls.GENERIC_LOCALITY_TOKENS):
-                result["locality"] = part
+            # Check if this single unpunctuated segment contains both thoroughfare and locality
+            thoroughfare_pattern = rf"\b({'|'.join(cls.THOROUGHFARE_TOKENS)})\b"
+            t_match = re.search(thoroughfare_pattern, part, re.IGNORECASE)
+            
+            if t_match and t_match.end() < len(part):
+                # Split at end of thoroughfare word
+                split_point = t_match.end()
+                potential_street = part[:split_point].strip()
+                potential_locality = part[split_point:].strip(" ,-–")
+                if potential_locality:
+                    result["street"] = potential_street
+                    result["locality"] = potential_locality
+                else:
+                    result["street"] = part
             else:
-                result["street"] = part
+                is_thoroughfare = bool(t_match)
+                is_premise = bool(re.search(r"\b(shop|flat|building|bldg|plot|floor|complex|plaza|no\.)\b", part, re.IGNORECASE))
+                if is_thoroughfare or is_premise:
+                    result["street"] = part
+                elif any(ind in part.lower() for ind in cls.GENERIC_LOCALITY_TOKENS):
+                    result["locality"] = part
+                else:
+                    result["street"] = part
         elif len(content_parts) == 2:
             result["street"] = content_parts[0]
             result["locality"] = content_parts[1]
         elif len(content_parts) >= 3:
             # Check for generic locality keywords in the tail
-            # e.g., parts: ["Shop No. 3, 4, 5", "Abundance Building", "90 Feet Rd", "Deendayal Nagar", "Mulund East"]
             # Locate split point between street/building descriptors and locality
             split_idx = len(content_parts) - 1
             if len(content_parts) >= 4 and any(ind in content_parts[-2].lower() for ind in cls.GENERIC_LOCALITY_TOKENS):

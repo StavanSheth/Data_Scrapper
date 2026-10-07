@@ -111,8 +111,17 @@ class GoogleMapsScraper:
                             if place_id:
                                 seen_place_ids.add(place_id)
 
-                            # Multi-strategy raw card extraction
-                            card_parent = await link.evaluate_handle('el => el.closest("div[jsaction]") || el.parentElement')
+                            # Multi-strategy raw card extraction with upward DOM resilience
+                            card_parent = await link.evaluate_handle('''el => {
+                                let cur = el;
+                                while (cur && cur !== document.body) {
+                                    if (cur.getAttribute("role") === "article") return cur;
+                                    if (cur.parentElement && cur.parentElement.getAttribute("role") === "feed") return cur;
+                                    if (cur.hasAttribute("jsaction") && cur.innerText && cur.innerText.split("\\n").length >= 2) return cur;
+                                    cur = cur.parentElement;
+                                }
+                                return el.closest("div[jsaction]") || el.parentElement?.parentElement || el.parentElement;
+                            }''')
                             card_text = await card_parent.inner_text() if card_parent else ""
                             card_html = await card_parent.inner_html() if card_parent else ""
                             card_lines = [l.strip() for l in card_text.split("\n") if l.strip()]
@@ -122,7 +131,7 @@ class GoogleMapsScraper:
                             business_name = aria_name or card_info.get("name") or "Unknown"
 
                             # Detail extraction directly from card container without mutating page state
-                            phone, phone_strat = await self._extract_phone(card_parent, card_lines)
+                            phone, phone_strat = await self._extract_phone(card_parent, card_lines, card_info.get("phone"))
                             address, addr_strat = await self._extract_address(card_parent, card_lines, card_info.get("address"))
                             website, web_strat = await self._extract_website(card_parent, link)
                             rating, review_count = await self._extract_metrics(card_parent, card_info)
@@ -206,27 +215,39 @@ class GoogleMapsScraper:
                 await browser.close()
 
     async def _find_place_links(self, page: Page) -> List[ElementHandle]:
-        """Finds place links using multi-strategy selectors."""
+        """Finds place links using multi-strategy selectors across feed and cards."""
         # Strategy 1: Maps place canonical links
         links = await page.query_selector_all('a[href*="/maps/place/"]')
         if links:
             return links
 
-        # Strategy 2: Feed container links with aria-label
-        links = await page.query_selector_all('div[role="feed"] a[aria-label]')
+        # Strategy 2: Feed container links with aria-label or role article
+        links = await page.query_selector_all('div[role="feed"] a[aria-label], div[role="article"] a[aria-label]')
         if links:
             return links
 
-        # Strategy 3: Broad maps place selector
+        # Strategy 3: Direct child item anchors within feed
+        links = await page.query_selector_all('div[role="feed"] > div a[href], div[role="feed"] div[jsaction] a')
+        if links:
+            return links
+
+        # Strategy 4: Broad maps place selector
         return await page.query_selector_all('a[href*="google.com/maps"]')
 
     async def _extract_phone(
         self,
         card_parent: Optional[ElementHandle],
-        card_lines: List[str]
+        card_lines: List[str],
+        parsed_phone: Optional[str] = None,
     ) -> tuple[Optional[str], str]:
         """Extracts phone number directly from card text lines or card DOM without mutating page state."""
-        # Strategy 1: Check card text for Indian phone patterns
+        # Strategy 1: Check parser extracted phone from lines
+        if parsed_phone:
+            clean = self.parser.clean_text_field("phone", parsed_phone)
+            if clean:
+                return clean, "card_parsed_phone"
+
+        # Strategy 2: Check card text for Indian phone patterns
         for line in card_lines:
             m = re.search(r"(?:\+91[\s-]?)?[6-9]\d{4}[\s-]?\d{5}\b", line)
             if m:
@@ -354,9 +375,12 @@ class GoogleMapsScraper:
             pass
 
     async def _wait_for_feed(self, page: Page) -> bool:
-        """Waits for the search feed or places to appear."""
+        """Waits for search feed, result cards, or direct place views to appear."""
         try:
-            await page.wait_for_selector('div[role="feed"], a[href*="/maps/place/"]', timeout=15000)
+            await page.wait_for_selector(
+                'div[role="feed"], div[role="article"], a[href*="/maps/place/"], h1.DUwDvf',
+                timeout=15000,
+            )
             return True
         except Exception:
-            return False
+            return bool(page.url and "/maps/place/" in page.url)

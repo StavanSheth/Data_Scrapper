@@ -9,11 +9,13 @@ from app.database.repositories.run_repository import RunRepository
 from app.database.repositories.business_repository import BusinessRepository
 from app.database.repositories.source_record_repository import SourceRecordRepository
 
+from app.database.migrations.runner import MigrationRunner
+
 @pytest.fixture
 def db_session(tmp_path):
     db_file = tmp_path / "test.db"
     engine = create_engine(f"sqlite:///{db_file.as_posix()}", connect_args={"check_same_thread": False})
-    Base.metadata.create_all(bind=engine)
+    MigrationRunner.run_pending(engine)
     TestingSession = sessionmaker(bind=engine)
     session = TestingSession()
     yield session

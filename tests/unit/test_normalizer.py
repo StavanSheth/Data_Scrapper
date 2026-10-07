@@ -102,6 +102,22 @@ def test_address_parsing():
     assert min_parsed["city"] == "Bengaluru"
     assert min_parsed["street"] == "MG Road"
 
+    # Multi-delimiter address with dash and pipe
+    dash_addr = "Plot 12 - New Link Road - Andheri West - Mumbai 400053"
+    dash_parsed = service.parse_address(dash_addr)
+    assert dash_parsed["city"] == "Mumbai"
+    assert dash_parsed["postal_code"] == "400053"
+    assert dash_parsed["street"] == "Plot 12, New Link Road"
+    assert dash_parsed["locality"] == "Andheri West"
+
+    # Single-line unpunctuated address
+    unpunct = "Shop 4 Crystal Plaza New Link Road Andheri West Mumbai 400053"
+    unpunct_parsed = service.parse_address(unpunct)
+    assert unpunct_parsed["city"] == "Mumbai"
+    assert unpunct_parsed["postal_code"] == "400053"
+    assert "New Link Road" in unpunct_parsed["street"]
+    assert "Andheri West" in unpunct_parsed["locality"]
+
 def test_coordinate_validation():
     service = NormalizationService()
     

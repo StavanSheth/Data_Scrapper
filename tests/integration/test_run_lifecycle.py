@@ -12,11 +12,13 @@ from app.database.repositories.business_repository import BusinessRepository
 from app.core.domain.models import RawGoogleRecord
 from app.workers.run_worker import RunWorker
 
+from app.database.migrations.runner import MigrationRunner
+
 @pytest.fixture
 def db_context(tmp_path):
     db_file = tmp_path / "lifecycle.db"
     engine = create_engine(f"sqlite:///{db_file.as_posix()}", connect_args={"check_same_thread": False})
-    Base.metadata.create_all(bind=engine)
+    MigrationRunner.run_pending(engine)
     TestingSession = sessionmaker(bind=engine)
     return TestingSession, db_file
 

@@ -69,6 +69,7 @@ class GoogleMapsParser:
     def parse_card_lines(lines: list[str], default_category: Optional[str] = None) -> Dict[str, Any]:
         """
         Parse text lines from a Google Maps search card as fallback metadata.
+        Robust to DOM rearrangements, star icons, multi-delimiter lines, and embedded contacts.
         """
         data: Dict[str, Any] = {
             "name": None,
@@ -76,13 +77,14 @@ class GoogleMapsParser:
             "review_count": None,
             "category": default_category,
             "address": None,
+            "phone": None,
             "opening_hours": None,
         }
 
         if not lines:
             return data
 
-        # Line 0 usually contains business name
+        # Line 0 typically contains business name
         data["name"] = lines[0].strip()
 
         for line in lines[1:]:
@@ -90,30 +92,42 @@ class GoogleMapsParser:
             if not cleaned:
                 continue
 
-            # Check for rating e.g. "4.7" or "4.7 (120)"
-            rating_match = re.match(r"^([1-5]\.\d)(\s*\(([0-9,]+)\))?$", cleaned)
+            # 1. Rating & Review count extraction (supports "4.7", "4.7 ★ (120)", "4.7(1,234)", "4.7 stars")
+            rating_match = re.search(r"\b([1-5]\.\d)\b(?:\s*[\*★☆]|\s*stars)?(?:\s*\(([0-9,]+)\)|(?:\s+([0-9,]+)\s*reviews?))?", cleaned, re.IGNORECASE)
             if rating_match and data["rating"] is None:
                 try:
                     data["rating"] = float(rating_match.group(1))
-                    if rating_match.group(3):
-                        data["review_count"] = int(rating_match.group(3).replace(",", ""))
+                    count_str = rating_match.group(2) or rating_match.group(3)
+                    if count_str:
+                        data["review_count"] = int(count_str.replace(",", ""))
                 except Exception:
                     pass
-                continue
 
-            # Check for opening hours first like "Open · Closes 8 pm"
-            if re.search(r"(?i)\b(open|closed|closes)\b", cleaned):
+            # 2. Check for opening hours like "Open · Closes 8 pm" or "Closed · Opens 10 am"
+            if re.search(r"(?i)\b(open|closed|closes|opens)\b", cleaned):
                 data["opening_hours"] = cleaned
                 continue
 
-            # Check for category / address delimiter (e.g. "Hairdresser · Shop No. 3")
-            if "·" in cleaned or "•" in cleaned:
-                parts = [p.strip() for p in re.split(r"[·•]", cleaned) if p.strip()]
-                if len(parts) >= 1:
-                    data["category"] = parts[0]
-                if len(parts) >= 2 and not data["address"]:
-                    data["address"] = parts[-1]
+            # 3. Check for phone number inside line
+            phone_match = re.search(r"(?:\+91[\s-]?)?[6-9]\d{4}[\s-]?\d{5}\b|\b0\d{2,4}[-\s]?\d{6,8}\b", cleaned)
+            if phone_match and not data["phone"]:
+                data["phone"] = phone_match.group(0).strip()
+
+            # 4. Check for category / address delimiters (e.g. "Hairdresser · Gate No. 2, Karma Sankalp Building")
+            if any(sep in cleaned for sep in ("·", "•", "|")):
+                parts = [p.strip() for p in re.split(r"[·•|]", cleaned) if p.strip()]
+                content_parts = [p for p in parts if not re.match(r"^[$₹€£]+$", p)]
+                if len(content_parts) >= 1 and (not data["category"] or data["category"] == default_category):
+                    if not re.search(r"(?i)\b(open|closed|stars?|\d+\.\d+)\b", content_parts[0]):
+                        data["category"] = content_parts[0]
+                if len(content_parts) >= 2 and not data["address"]:
+                    data["address"] = content_parts[-1]
                 continue
+
+            # 5. Standalone address cue line
+            if re.search(r"(?i)\b(road|rd|marg|street|st|lane|gali|nagar|sector|block|floor|complex|plaza|near|opp|behind|chowk)\b", cleaned):
+                if not data["address"]:
+                    data["address"] = cleaned
 
         return data
 

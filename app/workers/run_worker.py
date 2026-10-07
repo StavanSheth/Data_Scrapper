@@ -72,6 +72,7 @@ class RunWorker:
         limit: int,
     ) -> None:
         """Executes the Google Maps discovery run with persistent checkpointing."""
+        # ponytail: Checkpoint reconstruction from SQLite source records across process crashes, upgrade trigger: distributed persistent browser session / remote CDP worker pool.
         scraper = GoogleMapsScraper()
 
         # Checkpoint resumption: query previously extracted records and progress

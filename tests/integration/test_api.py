@@ -9,6 +9,8 @@ from app.database.session import get_db
 from app.main import app
 from app.database.models import RunModel, BusinessModel
 
+from app.database.migrations.runner import MigrationRunner
+
 @pytest.fixture
 def client(tmp_path):
     db_file = tmp_path / "test_api.db"
@@ -16,7 +18,7 @@ def client(tmp_path):
         f"sqlite:///{db_file.as_posix()}",
         connect_args={"check_same_thread": False}
     )
-    Base.metadata.create_all(bind=test_engine)
+    MigrationRunner.run_pending(test_engine)
     TestingSession = sessionmaker(bind=test_engine)
 
     def override_get_db():

@@ -77,6 +77,31 @@ class RunService:
         )
         return run
 
+    def resume_run(self, run_id: str) -> RunModel:
+        """Resumes an interrupted or stopped scraping run from its persistent SQLite checkpoint."""
+        run = self.run_repo.get_by_id(run_id)
+        if not run:
+            raise ValueError(f"Run {run_id} not found.")
+
+        if run.status in ["RUNNING", "QUEUED"]:
+            return run
+
+        # ponytail: Checkpoint reconstruction from SQLite source records across process crashes, upgrade trigger: distributed persistent browser session / remote CDP worker pool.
+        self.run_repo.update_status(run_id, status="QUEUED", error_message=None)
+        run.status = "QUEUED"
+        run.error_message = None
+
+        TaskManager.spawn(
+            run_id=run.id,
+            coro=self.worker.execute_run(
+                run_id=run.id,
+                city=run.city_input,
+                category=run.category or "business",
+                limit=run.requested_limit,
+            )
+        )
+        return run
+
     def cancel_run(self, run_id: str) -> Optional[RunModel]:
         """Request persistent cancellation of run via SQLite and task cancel."""
         run = self.run_repo.get_by_id(run_id)
