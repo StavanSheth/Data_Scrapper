@@ -128,12 +128,69 @@ class NormalizationService:
         except Exception:
             return None, None, "INVALID"
 
-    @staticmethod
-    def parse_address(address: Optional[str], default_city: Optional[str] = None) -> Dict[str, Optional[str]]:
+    INDIAN_STATES = {
+        "andhra pradesh": "Andhra Pradesh",
+        "arunachal pradesh": "Arunachal Pradesh",
+        "assam": "Assam",
+        "bihar": "Bihar",
+        "chhattisgarh": "Chhattisgarh",
+        "goa": "Goa",
+        "gujarat": "Gujarat",
+        "haryana": "Haryana",
+        "himachal pradesh": "Himachal Pradesh",
+        "jharkhand": "Jharkhand",
+        "karnataka": "Karnataka",
+        "kerala": "Kerala",
+        "madhya pradesh": "Madhya Pradesh",
+        "maharashtra": "Maharashtra",
+        "manipur": "Manipur",
+        "meghalaya": "Meghalaya",
+        "mizoram": "Mizoram",
+        "nagaland": "Nagaland",
+        "odisha": "Odisha",
+        "punjab": "Punjab",
+        "rajasthan": "Rajasthan",
+        "sikkim": "Sikkim",
+        "tamil nadu": "Tamil Nadu",
+        "telangana": "Telangana",
+        "tripura": "Tripura",
+        "uttar pradesh": "Uttar Pradesh",
+        "uttarakhand": "Uttarakhand",
+        "west bengal": "West Bengal",
+        "delhi": "Delhi",
+        "chandigarh": "Chandigarh",
+        "puducherry": "Puducherry",
+        "jammu and kashmir": "Jammu and Kashmir",
+        "ladakh": "Ladakh",
+        "mh": "Maharashtra",
+        "dl": "Delhi",
+        "ka": "Karnataka",
+        "tn": "Tamil Nadu",
+        "wb": "West Bengal",
+        "up": "Uttar Pradesh",
+        "gj": "Gujarat",
+        "rj": "Rajasthan",
+        "ts": "Telangana",
+        "ap": "Andhra Pradesh",
+    }
+
+    LOCALITY_INDICATORS = (
+        "nagar", "colony", "layout", "enclave", "extension", "extn", "sector",
+        "block", "phase", "east", "west", "circle", "chowk", "bazaar", "market",
+        "complex", "plaza", "heights", "tower", "towers", "bhavan", "wadi", "pada",
+        "bandra", "andheri", "juhu", "mulund", "borivali", "kandivali", "malad",
+        "goregaon", "powai", "kurla", "ghatkopar", "dadar", "worli", "colaba",
+        "chembur", "vashi", "nerul", "kharghar", "thane", "koramangala",
+        "indiranagar", "whitefield", "hsr", "btm", "jayanagar", "electronic city",
+        "connaught place", "saket", "karol bagh", "lajpat nagar", "rohini", "dwarka"
+    )
+
+    @classmethod
+    def parse_address(cls, address: Optional[str], default_city: Optional[str] = None) -> Dict[str, Optional[str]]:
         """
-        Parse raw address string into structured components:
+        Parse raw Indian address string into structured components:
         street, locality, city, state, postal_code, country.
-        Tolerant of missing parts.
+        Robust to multi-part premises, unformatted landmarks, and missing fields.
         """
         result: Dict[str, Optional[str]] = {
             "street": None,
@@ -149,35 +206,87 @@ class NormalizationService:
 
         raw = address.strip()
         # Clean prefix like "Address: "
-        raw = re.sub(r"(?i)^address[\s:]*", "", raw).strip()
+        raw = re.sub(r"(?i)^(address|addr)[\s:]*", "", raw).strip()
 
-        # Extract 6-digit Indian PIN code
+        # 1. Extract 6-digit Indian PIN code
         pin_match = re.search(r"\b([1-9][0-9]{5})\b", raw)
         if pin_match:
             result["postal_code"] = pin_match.group(1)
 
-        # Check known Indian states
-        states = [
-            "Maharashtra", "Delhi", "Karnataka", "Tamil Nadu", "Gujarat",
-            "Uttar Pradesh", "Telangana", "West Bengal", "Rajasthan", "Haryana",
-            "Kerala", "Punjab", "Madhya Pradesh", "Goa", "Bihar"
-        ]
-        for state in states:
-            if re.search(rf"\b{re.escape(state)}\b", raw, re.IGNORECASE):
-                result["state"] = state
+        # 2. Extract State using comprehensive dictionary
+        for state_key, canonical_state in cls.INDIAN_STATES.items():
+            if re.search(rf"\b{re.escape(state_key)}\b", raw, re.IGNORECASE):
+                result["state"] = canonical_state
                 break
 
-        # Split components by comma
-        parts = [p.strip() for p in raw.split(",") if p.strip()]
-        if len(parts) >= 1:
-            result["street"] = parts[0]
-        if len(parts) >= 2:
-            result["locality"] = parts[1]
-        if len(parts) >= 3 and not result["city"]:
-            # Often city is 3rd or 4th component
-            potential_city = re.sub(r"\b[1-9][0-9]{5}\b", "", parts[2]).strip()
-            if potential_city:
-                result["city"] = potential_city
+        # 3. Detect City
+        clean_no_pin = re.sub(r"\b[1-9][0-9]{5}\b", "", raw)
+        if default_city and re.search(rf"\b{re.escape(default_city)}\b", clean_no_pin, re.IGNORECASE):
+            result["city"] = default_city
+
+        # 4. Split segments and coalesce numerical subparts (e.g., "Shop No. 3", "4", "5")
+        raw_parts = [p.strip() for p in raw.split(",") if p.strip()]
+        coalesced_parts: list[str] = []
+        for p in raw_parts:
+            # If current part is just a lone digit or range (e.g. "4", "5", "4 & 5")
+            # coalesce with previous segment
+            if coalesced_parts and re.match(r"^[\d\s&\-\/]+$", p):
+                coalesced_parts[-1] = f"{coalesced_parts[-1]}, {p}"
+            else:
+                coalesced_parts.append(p)
+
+        # 5. Filter out components that only contain PIN, state, or country
+        content_parts: list[str] = []
+        for part in coalesced_parts:
+            p_clean = part.strip()
+            # If part is solely the PIN code
+            if re.fullmatch(r"[1-9][0-9]{5}", p_clean):
+                continue
+            # If part is solely India / Bharat
+            if re.fullmatch(r"(?i)(india|bharat)", p_clean):
+                continue
+            # If part is solely the detected state name
+            if result["state"] and re.fullmatch(rf"(?i){re.escape(result['state'])}", p_clean):
+                continue
+            # If part contains state + PIN (e.g. "Maharashtra 400081")
+            if result["state"] and re.search(rf"(?i){re.escape(result['state'])}", p_clean):
+                p_sub = re.sub(rf"(?i){re.escape(result['state'])}", "", p_clean)
+                p_sub = re.sub(r"\b[1-9][0-9]{5}\b", "", p_sub).strip()
+                if not p_sub:
+                    continue
+                p_clean = p_sub
+            # If part is solely the city name
+            if result["city"] and re.fullmatch(rf"(?i){re.escape(result['city'])}", p_clean):
+                continue
+            content_parts.append(p_clean)
+
+        # If city was not determined yet, try taking candidate from penultimate parts
+        if not result["city"] and content_parts:
+            candidate = content_parts[-1]
+            if not any(kw in candidate.lower() for kw in ("road", "marg", "lane", "street", "shop")):
+                result["city"] = candidate
+                content_parts.pop()
+
+        # 6. Assign Street and Locality intelligently
+        if len(content_parts) == 1:
+            part = content_parts[0]
+            if any(ind in part.lower() for ind in cls.LOCALITY_INDICATORS) and not re.search(r"\b(shop|flat|building|plot|floor|no\.)\b", part, re.IGNORECASE):
+                result["locality"] = part
+            else:
+                result["street"] = part
+        elif len(content_parts) == 2:
+            result["street"] = content_parts[0]
+            result["locality"] = content_parts[1]
+        elif len(content_parts) >= 3:
+            # Check for locality keywords in the tail
+            # e.g., parts: ["Shop No. 3, 4, 5", "Abundance Building", "90 Feet Rd", "Deendayal Nagar", "Mulund East"]
+            # Locate split point between street/building descriptors and locality
+            split_idx = len(content_parts) - 1
+            if len(content_parts) >= 4 and any(ind in content_parts[-2].lower() for ind in cls.LOCALITY_INDICATORS):
+                split_idx = len(content_parts) - 2
+
+            result["street"] = ", ".join(content_parts[:split_idx])
+            result["locality"] = ", ".join(content_parts[split_idx:])
 
         return result
 

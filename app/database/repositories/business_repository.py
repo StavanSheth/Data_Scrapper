@@ -44,6 +44,16 @@ class BusinessRepository:
             .first()
         )
 
+    ALLOWED_SORT_COLUMNS = {
+        "created_at": BusinessModel.created_at,
+        "name": BusinessModel.name,
+        "rating": BusinessModel.rating,
+        "review_count": BusinessModel.review_count,
+        "city": BusinessModel.city,
+        "category": BusinessModel.category,
+        "updated_at": BusinessModel.updated_at,
+    }
+
     def find_duplicate(
         self,
         run_id: str,
@@ -51,23 +61,85 @@ class BusinessRepository:
         normalized_name: Optional[str] = None,
         city: Optional[str] = None,
         phone: Optional[str] = None,
+        normalized_phone: Optional[str] = None,
+        website_domain: Optional[str] = None,
+        postal_code: Optional[str] = None,
+        address: Optional[str] = None,
     ) -> Optional[BusinessModel]:
-        """Check for existing duplicate business in run."""
-        # Strong signal: Google Place ID
+        """
+        Check for existing duplicate business in run using prioritized signals:
+        1. Google Place ID (exact match)
+        2. Normalized name + city + phone / normalized_phone
+        3. Normalized name + city + website domain (resolves listings lacking phone)
+        4. Normalized name + city + postal code (when phone/website missing)
+        5. Normalized name + exact address
+        """
+        # Strong signal 1: Google Place ID
         if google_place_id:
             existing = self.get_by_google_place_id(run_id, google_place_id)
             if existing:
                 return existing
 
-        # Secondary signal: identical normalized name, city, and phone
-        if normalized_name and city and phone:
+        if not normalized_name:
+            return None
+
+        # Signal 2: Identical normalized name, city, and phone
+        active_phone = phone or normalized_phone
+        if city and active_phone:
             existing = (
                 self.db.query(BusinessModel)
                 .filter(
                     BusinessModel.run_id == run_id,
                     BusinessModel.normalized_name == normalized_name,
                     BusinessModel.city == city,
-                    BusinessModel.phone == phone,
+                    or_(
+                        BusinessModel.phone == active_phone,
+                        BusinessModel.normalized_phone == active_phone,
+                    ),
+                )
+                .first()
+            )
+            if existing:
+                return existing
+
+        # Signal 3: Normalized name + city + website domain (handles phone-less listings)
+        if city and website_domain and website_domain.strip():
+            existing = (
+                self.db.query(BusinessModel)
+                .filter(
+                    BusinessModel.run_id == run_id,
+                    BusinessModel.normalized_name == normalized_name,
+                    BusinessModel.city == city,
+                    BusinessModel.website_domain == website_domain.strip(),
+                )
+                .first()
+            )
+            if existing:
+                return existing
+
+        # Signal 4: Normalized name + city + postal code
+        if city and postal_code and postal_code.strip():
+            existing = (
+                self.db.query(BusinessModel)
+                .filter(
+                    BusinessModel.run_id == run_id,
+                    BusinessModel.normalized_name == normalized_name,
+                    BusinessModel.city == city,
+                    BusinessModel.postal_code == postal_code.strip(),
+                )
+                .first()
+            )
+            if existing:
+                return existing
+
+        # Signal 5: Normalized name + exact address
+        if address and address.strip():
+            existing = (
+                self.db.query(BusinessModel)
+                .filter(
+                    BusinessModel.run_id == run_id,
+                    BusinessModel.normalized_name == normalized_name,
+                    BusinessModel.address == address.strip(),
                 )
                 .first()
             )
@@ -103,8 +175,8 @@ class BusinessRepository:
 
         total = query.count()
 
-        # Sorting
-        sort_column = getattr(BusinessModel, sort_by, BusinessModel.created_at)
+        # Safe sorting via strict allowlist
+        sort_column = self.ALLOWED_SORT_COLUMNS.get(sort_by, BusinessModel.created_at)
         if sort_order.lower() == "asc":
             query = query.order_by(asc(sort_column))
         else:

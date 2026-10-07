@@ -1,7 +1,8 @@
-"""In-process background worker for executing scraping runs."""
+"""Supervised background worker for executing and checkpointing scraping runs."""
 
 import asyncio
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, Set, Optional, Callable
@@ -13,8 +14,9 @@ from app.database.repositories.business_repository import BusinessRepository
 from app.scraping.maps.google_maps_scraper import GoogleMapsScraper
 from app.core.services.validation_service import ValidationService
 
-# Global registry of active cancel callbacks and WebSocket listeners
-CANCEL_FLAGS: Dict[str, bool] = {}
+logger = logging.getLogger("run_worker")
+
+# WebSocket listeners for real-time live events
 WS_LISTENERS: Dict[str, Set[Callable[[dict], None]]] = {}
 
 def register_ws_listener(run_id: str, callback: Callable[[dict], None]) -> None:
@@ -34,12 +36,42 @@ async def broadcast_event(run_id: str, event_data: dict) -> None:
                 await cb(event_data)
             else:
                 cb(event_data)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Error broadcasting event: {e}")
 
-def request_cancel(run_id: str) -> bool:
-    CANCEL_FLAGS[run_id] = True
-    return True
+class TaskManager:
+    """Supervises in-process async tasks to prevent unhandled background task death."""
+    _active_tasks: Dict[str, asyncio.Task] = {}
+
+    @classmethod
+    def spawn(cls, run_id: str, coro) -> asyncio.Task:
+        task = asyncio.create_task(coro)
+        cls._active_tasks[run_id] = task
+
+        def _on_done(t: asyncio.Task):
+            cls._active_tasks.pop(run_id, None)
+            if t.cancelled():
+                logger.info(f"Task for run {run_id} was cancelled.")
+            elif t.exception():
+                logger.error(f"Task for run {run_id} failed with exception: {t.exception()}", exc_info=t.exception())
+
+        task.add_done_callback(_on_done)
+        return task
+
+    @classmethod
+    def cancel(cls, run_id: str) -> bool:
+        task = cls._active_tasks.get(run_id)
+        if task and not task.done():
+            task.cancel()
+            return True
+        return False
+
+    @classmethod
+    def recover_stale_runs(cls) -> int:
+        """Recovers any runs left in RUNNING or QUEUED state across server restarts."""
+        with get_db_context() as db:
+            repo = RunRepository(db)
+            return repo.recover_stale_runs()
 
 class RunWorker:
     def __init__(self):
@@ -52,11 +84,10 @@ class RunWorker:
         category: str,
         limit: int,
     ) -> None:
-        """Executes the Google Maps discovery run in the background."""
-        CANCEL_FLAGS[run_id] = False
+        """Executes the Google Maps discovery run with persistent checkpointing."""
         scraper = GoogleMapsScraper()
 
-        # Update status to RUNNING
+        # Update status to RUNNING in database
         with get_db_context() as db:
             run_repo = RunRepository(db)
             now_iso = datetime.now(timezone.utc).isoformat()
@@ -76,10 +107,16 @@ class RunWorker:
         failed = 0
         error_msg = None
 
-        try:
-            def is_cancelled() -> bool:
-                return CANCEL_FLAGS.get(run_id, False)
+        def is_cancelled() -> bool:
+            # Query SQLite database state directly for persistent cancellation
+            try:
+                with get_db_context() as db:
+                    repo = RunRepository(db)
+                    return repo.is_cancelled(run_id)
+            except Exception:
+                return False
 
+        try:
             # Stream records from scraper
             async for raw_record in scraper.scrape(
                 city=city,
@@ -88,6 +125,9 @@ class RunWorker:
                 run_id=run_id,
                 cancel_check=is_cancelled,
             ):
+                if is_cancelled():
+                    break
+
                 discovered += 1
                 source_record_id = f"src_{uuid.uuid4().hex[:12]}"
 
@@ -137,6 +177,10 @@ class RunWorker:
                             normalized_name=business.normalized_name,
                             city=business.city,
                             phone=business.phone,
+                            normalized_phone=business.normalized_phone,
+                            website_domain=business.website_domain,
+                            postal_code=business.postal_code,
+                            address=business.address,
                         )
 
                         if not duplicate:
@@ -176,10 +220,10 @@ class RunWorker:
                             biz_repo.create_with_provenances(biz_model, provenances)
                             saved += 1
                         else:
-                            # Already exists in current run, do not duplicate
+                            # Already exists in current run, counted as processed
                             pass
 
-                # Update run progress counts
+                # Update run progress counts in SQLite
                 with get_db_context() as db:
                     run_repo = RunRepository(db)
                     run_repo.update_counts(
@@ -189,8 +233,9 @@ class RunWorker:
                         failed=failed,
                     )
 
-                # Broadcast live progress
-                pct = int((saved / limit) * 100) if limit > 0 else 0
+                # Broadcast live progress accurately: (saved + failed) / limit
+                total_processed = saved + failed
+                pct = int((total_processed / max(limit, 1)) * 100)
                 await broadcast_event(run_id, {
                     "event": "run.progress",
                     "run_id": run_id,
@@ -202,20 +247,26 @@ class RunWorker:
                     "percentage": min(pct, 100),
                 })
 
+        except asyncio.CancelledError:
+            # Task cancellation requested
+            error_msg = "Run was cancelled by user."
         except Exception as e:
-            error_msg = str(e)
+            logger.error(f"Error in scraping run {run_id}: {e}", exc_info=True)
+            error_msg = "An unexpected error occurred during scraping."
             failed += 1
 
         finally:
             now_iso = datetime.now(timezone.utc).isoformat()
             final_status = "COMPLETED"
 
-            if CANCEL_FLAGS.get(run_id, False):
+            # Check if cancelled in DB
+            cancelled = is_cancelled()
+
+            if cancelled:
                 final_status = "CANCELLED"
-            elif error_msg and saved == 0:
+            elif error_msg and saved == 0 and not cancelled:
                 final_status = "FAILED"
             elif failed > 0 and saved > 0:
-                # Partial success (per prompt & Document 1 Section 9)
                 final_status = "PARTIAL"
             elif saved == 0 and discovered > 0:
                 final_status = "FAILED"
@@ -237,8 +288,6 @@ class RunWorker:
                     error_message=error_msg,
                 )
 
-            CANCEL_FLAGS.pop(run_id, None)
-
             await broadcast_event(run_id, {
                 "event": f"run.{final_status.lower()}",
                 "run_id": run_id,
@@ -246,6 +295,7 @@ class RunWorker:
                 "discovered": discovered,
                 "saved": saved,
                 "failed": failed,
+                "percentage": 100,
                 "completed_at": now_iso,
                 "error_message": error_msg,
             })

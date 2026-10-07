@@ -8,7 +8,7 @@ class CreateRunRequest(BaseModel):
     category: str = Field(..., min_length=2, description="Business category")
     limit: int = Field(100, ge=1, le=1000, description="Maximum businesses to scrape")
     confidence_threshold: float = Field(0.80, ge=0.0, le=1.0, description="Match confidence threshold")
-    start_immediately: bool = Field(True, description="Whether to start run immediately upon creation")
+    start_immediately: bool = Field(False, description="Whether to start run immediately upon creation (default: False for explicit create/start lifecycle)")
 
 class RunResponse(BaseModel):
     id: str

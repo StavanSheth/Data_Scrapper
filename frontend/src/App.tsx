@@ -98,7 +98,10 @@ export const App: React.FC = () => {
     if (!activeRun) return;
 
     // Connect WebSocket
-    const wsUrl = `ws://127.0.0.1:8000/ws/runs/${activeRun.id}`;
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const defaultWsBase = `${wsProtocol}//${window.location.host}/ws`;
+    const wsBase = import.meta.env.VITE_WS_BASE_URL || defaultWsBase;
+    const wsUrl = `${wsBase}/runs/${activeRun.id}`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 

@@ -6,13 +6,15 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from app.config.settings import settings
 from app.api.router import api_router
-from app.database.engine import engine, Base
-from app.workers.run_worker import register_ws_listener, unregister_ws_listener
+from app.database.engine import init_db
+from app.workers.run_worker import register_ws_listener, unregister_ws_listener, TaskManager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Initialize SQLite database schema
-    Base.metadata.create_all(bind=engine)
+    init_db()
+    # Recover any runs left in RUNNING/QUEUED from a prior crash or server restart
+    TaskManager.recover_stale_runs()
     yield
 
 app = FastAPI(

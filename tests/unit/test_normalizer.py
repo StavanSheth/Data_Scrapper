@@ -93,7 +93,8 @@ def test_address_parsing():
     assert parsed["postal_code"] == "400081"
     assert parsed["state"] == "Maharashtra"
     assert parsed["city"] == "Mumbai"
-    assert parsed["street"] == "Shop No. 3"
+    assert parsed["street"] == "Shop No. 3, 4, 5, Abundance Building, 90 Feet Rd"
+    assert parsed["locality"] == "Deendayal Nagar, Mulund East"
     assert parsed["country"] == "India"
 
     # Tolerant with minimal address

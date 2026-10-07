@@ -14,6 +14,10 @@ from app.core.services.run_service import RunService
 
 router = APIRouter(prefix="/runs", tags=["Runs"])
 
+import logging
+
+logger = logging.getLogger("runs_api")
+
 @router.post("", response_model=RunResponse, status_code=status.HTTP_201_CREATED)
 async def create_run(
     request: CreateRunRequest,
@@ -21,7 +25,7 @@ async def create_run(
 ):
     """
     Create a new scraping run.
-    If start_immediately is true (default), kicks off background scraping immediately.
+    By default, creates a QUEUED run. If start_immediately is true, starts execution.
     """
     try:
         run = run_service.create_run(
@@ -36,7 +40,11 @@ async def create_run(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to create run: {str(e)}")
+        logger.error(f"Failed to create run: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="An internal server error occurred while creating the scraping run.",
+        )
 
 @router.get("", response_model=RunListResponse)
 def list_runs(
@@ -72,7 +80,11 @@ async def start_run(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to start run: {str(e)}")
+        logger.error(f"Failed to start run {run_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="An internal server error occurred while starting the scraping run.",
+        )
 
 @router.post("/{run_id}/cancel", response_model=RunResponse)
 async def cancel_run(

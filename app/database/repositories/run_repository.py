@@ -78,3 +78,20 @@ class RunRepository:
         self.db.commit()
         self.db.refresh(run)
         return run
+
+    def is_cancelled(self, run_id: str) -> bool:
+        """Check if run is marked CANCELLED in SQLite database."""
+        run = self.get_by_id(run_id)
+        if not run:
+            return True
+        return run.status == "CANCELLED" or run.cancelled_at is not None
+
+    def recover_stale_runs(self, message: str = "Interrupted by system restart") -> int:
+        """Finds orphaned RUNNING or QUEUED runs upon startup and marks them FAILED."""
+        stale = self.db.query(RunModel).filter(RunModel.status.in_(["RUNNING", "QUEUED"])).all()
+        for r in stale:
+            r.status = "FAILED"
+            r.error_message = message
+        if stale:
+            self.db.commit()
+        return len(stale)

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.database.models import RunModel, BusinessModel
 from app.database.repositories.run_repository import RunRepository
 from app.database.repositories.business_repository import BusinessRepository
-from app.workers.run_worker import RunWorker, request_cancel
+from app.workers.run_worker import RunWorker, TaskManager
 
 class RunService:
     def __init__(self, db: Session):
@@ -65,35 +65,28 @@ class RunService:
         self.run_repo.update_status(run_id, status="QUEUED")
         run.status = "QUEUED"
 
-        # Spawn in-process background worker
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(
-                self.worker.execute_run(
-                    run_id=run.id,
-                    city=run.city_input,
-                    category=run.category or "business",
-                    limit=run.requested_limit,
-                )
+        # Supervised task spawning via TaskManager
+        TaskManager.spawn(
+            run_id=run.id,
+            coro=self.worker.execute_run(
+                run_id=run.id,
+                city=run.city_input,
+                category=run.category or "business",
+                limit=run.requested_limit,
             )
-        except RuntimeError:
-            # If called without running loop, create new loop or run task
-            asyncio.run(
-                self.worker.execute_run(
-                    run_id=run.id,
-                    city=run.city_input,
-                    category=run.category or "business",
-                    limit=run.requested_limit,
-                )
-            )
+        )
         return run
 
     def cancel_run(self, run_id: str) -> Optional[RunModel]:
-        """Request cooperative cancellation of run."""
+        """Request persistent cancellation of run via SQLite and task cancel."""
         run = self.run_repo.get_by_id(run_id)
         if not run:
             return None
-        request_cancel(run_id)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        self.run_repo.update_status(run_id, status="CANCELLED", cancelled_at=now_iso)
+        TaskManager.cancel(run_id)
+        run.status = "CANCELLED"
+        run.cancelled_at = now_iso
         return run
 
     def get_run(self, run_id: str) -> Optional[RunModel]:

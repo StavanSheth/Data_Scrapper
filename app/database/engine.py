@@ -21,3 +21,11 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+def init_db():
+    """
+    Initializes database schema and ensures required SQLite tables exist.
+    In Slice 2+, this serves as the hook for Alembic / versioned migrations.
+    """
+    Base.metadata.create_all(bind=engine)
+
