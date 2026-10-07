@@ -1,6 +1,7 @@
-"""Integration tests for FastAPI endpoints."""
+"""Integration tests for FastAPI endpoints covering Section 18 and 19 requirements."""
 
 import pytest
+from unittest.mock import patch
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -8,7 +9,6 @@ from app.database.engine import Base
 from app.database.session import get_db
 from app.main import app
 from app.database.models import RunModel, BusinessModel
-
 from app.database.migrations.runner import MigrationRunner
 
 @pytest.fixture
@@ -45,6 +45,20 @@ def client(tmp_path):
         created_at="2026-10-07T00:00:00Z",
     )
     db.add(run)
+
+    run_active = RunModel(
+        id="run_active_01",
+        city_input="Mumbai",
+        city_normalized="mumbai",
+        category="Spa",
+        status="CREATED",
+        records_discovered=0,
+        records_saved=0,
+        records_failed=0,
+        created_at="2026-10-07T00:00:00Z",
+    )
+    db.add(run_active)
+
     biz = BusinessModel(
         id="biz_seeded_01",
         run_id="run_seeded_01",
@@ -78,7 +92,7 @@ def test_create_run_and_get(client):
         "category": "Spa",
         "limit": 50,
         "confidence_threshold": 0.85,
-        "start_immediately": False,  # don't start scraper in sync unit test
+        "start_immediately": False,
     }
     res = client.post("/api/runs", json=payload)
     assert res.status_code == 201
@@ -87,11 +101,60 @@ def test_create_run_and_get(client):
     assert run_data["category"] == "Spa"
     assert run_data["requested_limit"] == 50
     assert run_data["status"] == "CREATED"
+    assert "records_attempted" in run_data
+    assert "records_duplicates" in run_data
 
     # Get by ID
     get_res = client.get(f"/api/runs/{run_data['id']}")
     assert get_res.status_code == 200
     assert get_res.json()["id"] == run_data["id"]
+
+def test_create_run_input_validation(client):
+    # Reject empty city
+    res = client.post("/api/runs", json={"city": "", "category": "Spa", "limit": 10})
+    assert res.status_code in [400, 422]
+
+    # Reject empty category
+    res = client.post("/api/runs", json={"city": "Mumbai", "category": "", "limit": 10})
+    assert res.status_code in [400, 422]
+
+    # Reject limit <= 0
+    res = client.post("/api/runs", json={"city": "Mumbai", "category": "Spa", "limit": 0})
+    assert res.status_code in [400, 422]
+
+    # Reject limit > 1000
+    res = client.post("/api/runs", json={"city": "Mumbai", "category": "Spa", "limit": 1500})
+    assert res.status_code in [400, 422]
+
+    # Reject invalid confidence threshold
+    res = client.post("/api/runs", json={"city": "Mumbai", "category": "Spa", "limit": 10, "confidence_threshold": 1.5})
+    assert res.status_code in [400, 422]
+
+def test_start_and_resume_lifecycle(client):
+    with patch("app.workers.run_worker.TaskManager.spawn") as mock_spawn:
+        # Start CREATED run -> QUEUED
+        start_res = client.post("/api/runs/run_active_01/start")
+        assert start_res.status_code == 200
+        assert start_res.json()["status"] == "QUEUED"
+        assert mock_spawn.called
+
+        # Start COMPLETED run -> rejected with 400
+        fail_res = client.post("/api/runs/run_seeded_01/start")
+        assert fail_res.status_code == 400
+
+        # Resume COMPLETED run -> rejected with 400
+        fail_res2 = client.post("/api/runs/run_seeded_01/resume")
+        assert fail_res2.status_code == 400
+
+def test_cancel_run(client):
+    # Cancel an active CREATED run -> CANCELLED
+    res = client.post("/api/runs/run_active_01/cancel")
+    assert res.status_code == 200
+    assert res.json()["status"] == "CANCELLED"
+
+    # Cancel a COMPLETED run -> rejected with 400
+    fail_res = client.post("/api/runs/run_seeded_01/cancel")
+    assert fail_res.status_code == 400
 
 def test_list_runs(client):
     res = client.get("/api/runs")
@@ -99,11 +162,6 @@ def test_list_runs(client):
     data = res.json()
     assert "runs" in data
     assert data["total"] >= 1
-
-def test_cancel_run(client):
-    res = client.post("/api/runs/run_seeded_01/cancel")
-    assert res.status_code == 200
-    assert res.json()["id"] == "run_seeded_01"
 
 def test_get_businesses_with_search_and_pagination(client):
     res = client.get("/api/runs/run_seeded_01/businesses?page=1&page_size=10")
@@ -121,6 +179,15 @@ def test_get_businesses_with_search_and_pagination(client):
     no_res = client.get("/api/runs/run_seeded_01/businesses?search=nonexistent")
     assert no_res.status_code == 200
     assert no_res.json()["total"] == 0
+
+def test_sort_by_validation(client):
+    # Valid sort field
+    res_valid = client.get("/api/runs/run_seeded_01/businesses?sort_by=name&sort_order=asc")
+    assert res_valid.status_code == 200
+
+    # Invalid sort field (SQL injection or arbitrary string prevention)
+    res_invalid = client.get("/api/runs/run_seeded_01/businesses?sort_by=invalid_column;--")
+    assert res_invalid.status_code == 422
 
 def test_get_business_detail(client):
     res = client.get("/api/runs/run_seeded_01/businesses/biz_seeded_01")

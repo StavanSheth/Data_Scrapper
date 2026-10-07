@@ -110,10 +110,14 @@ async def cancel_run(
     run_service: RunService = Depends(get_run_service),
 ):
     """Cancel an active run."""
-    run = run_service.cancel_run(run_id)
+    run = run_service.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found.")
-    return run
+    try:
+        updated = run_service.cancel_run(run_id)
+        return updated
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @router.get("/{run_id}/businesses", response_model=PaginatedBusinessResponse)
 def get_run_businesses(

@@ -1,14 +1,19 @@
+# --- Required Phase 1 Core ---
 fastapi==0.142.2
 uvicorn==0.54.0
 pydantic==2.13.5
 pydantic-settings==2.15.0
 sqlalchemy==2.1.3
-httpx==0.28.1
 playwright==1.63.0
 phonenumbers==9.0.40
+python-dotenv==1.2.4
+
+# --- Development & Test ---
+httpx==0.28.1
+pytest==9.1.1
+
+# --- Future Phase 2/3 (Preserved for Matching & Export) ---
 rapidfuzz==3.14.6
 beautifulsoup4==4.15.0
 lxml==6.1.3
 openpyxl==3.1.5
-python-dotenv==1.2.4
-pytest==9.1.1

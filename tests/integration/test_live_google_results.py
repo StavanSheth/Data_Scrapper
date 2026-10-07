@@ -1,11 +1,11 @@
-"""Test verifying live Google Maps extraction results and schema fidelity."""
+"""Fixture regression test verifying schema fidelity against historical evidence fixture."""
 
 import json
 import os
 import pytest
 
-def test_live_google_10_results_fidelity():
-    """Verifies that the repository contains verified live 10-business Google Maps extraction results."""
+def test_fixture_regression_10_results_fidelity():
+    """fixture_regression_test: Verifies schema fidelity against historical evidence fixture."""
     fixture_path = os.path.join(os.path.dirname(__file__), "..", "fixtures", "live_google_10_results.json")
     assert os.path.exists(fixture_path), f"Evidence fixture not found at {fixture_path}"
 

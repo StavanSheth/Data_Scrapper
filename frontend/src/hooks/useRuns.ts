@@ -15,8 +15,8 @@ export function useRuns() {
       setError(null);
       const data = await fetchRuns();
       setRuns(data);
-    } catch (err: any) {
-      const msg = err?.message || 'Failed to load runs';
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to load runs';
       setError(msg);
       console.error('Failed to load runs:', err);
     } finally {

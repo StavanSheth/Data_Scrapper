@@ -36,8 +36,10 @@ class RunModel(Base):
     total_platform_unmatched = Column(Integer, default=0)
     
     records_discovered = Column(Integer, default=0)
+    records_attempted = Column(Integer, default=0)
     records_saved = Column(Integer, default=0)
     records_failed = Column(Integer, default=0)
+    records_duplicates = Column(Integer, default=0)
     error_count = Column(Integer, default=0)
     error_message = Column(Text, nullable=True)
     

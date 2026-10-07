@@ -30,6 +30,11 @@ export function useRunMonitor(
     const wsUrl = `${wsBase}/runs/${activeRun.id}`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
+    let isWsHealthy = false;
+
+    ws.onopen = () => {
+      isWsHealthy = true;
+    };
 
     ws.onmessage = (event) => {
       try {
@@ -44,10 +49,19 @@ export function useRunMonitor(
     };
 
     ws.onerror = () => {
-      // WS error: handled by polling fallback below
+      isWsHealthy = false;
+    };
+
+    ws.onclose = () => {
+      isWsHealthy = false;
     };
 
     const pollInterval = setInterval(async () => {
+      // If WebSocket is active and receiving live events, skip polling
+      if (isWsHealthy) {
+        return;
+      }
+
       if (['RUNNING', 'QUEUED'].includes(activeRun.status)) {
         try {
           const fresh = await fetchRun(activeRun.id);
@@ -60,6 +74,7 @@ export function useRunMonitor(
     }, 3000);
 
     return () => {
+      isWsHealthy = false;
       ws.close();
       clearInterval(pollInterval);
     };

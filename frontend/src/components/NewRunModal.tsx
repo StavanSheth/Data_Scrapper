@@ -44,8 +44,8 @@ export const NewRunModal: React.FC<Props> = ({ isOpen, onClose, onSubmit }) => {
         start_immediately: true,
       });
       onClose();
-    } catch (err: any) {
-      setError(err.message || 'Failed to start scraping run');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to start scraping run');
     } finally {
       setLoading(false);
     }
@@ -188,7 +188,7 @@ export const NewRunModal: React.FC<Props> = ({ isOpen, onClose, onSubmit }) => {
                   className="w-full accent-emerald-500 bg-slate-950 rounded-lg cursor-pointer h-2"
                 />
                 <p className="text-[11px] text-slate-500">
-                  Pre-configured threshold for cross-platform entity matching in Slice 2. In Slice 1, all discovered records are preserved in canonical storage.
+                  Future matching configuration (not active in Phase 1 Google scraping). In Phase 1, all valid discovered businesses are saved to SQLite.
                 </p>
               </div>
             </details>

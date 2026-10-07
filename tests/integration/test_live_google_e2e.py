@@ -106,20 +106,30 @@ async def test_live_google_maps_full_vertical_slice_e2e():
     # A. Get Run status via API
     run_resp = client.get(f"/api/runs/{run_id}")
     assert run_resp.status_code == 200
-    assert run_resp.json()["status"] == "COMPLETED"
-    assert run_resp.json()["records_saved"] >= 1
+    run_data = run_resp.json()
+    assert run_data["status"] == "COMPLETED"
+    assert run_data["records_saved"] >= 1
+    assert "records_attempted" in run_data
+    assert "records_duplicates" in run_data
 
-    # B. List Run businesses via API
+    # B. List Run businesses via API with pagination
     biz_list_resp = client.get(f"/api/runs/{run_id}/businesses?page=1&page_size=10")
     assert biz_list_resp.status_code == 200
     biz_data = biz_list_resp.json()
     assert biz_data["total"] >= 1
     assert len(biz_data["items"]) >= 1
 
-    # C. Inspect business detail and field provenances via API
+    # C. Search businesses via API
+    first_biz_name = biz_data["items"][0]["name"]
+    query_word = first_biz_name.split()[0]
+    search_resp = client.get(f"/api/runs/{run_id}/businesses?search={query_word}")
+    assert search_resp.status_code == 200
+    assert search_resp.json()["total"] >= 1
+
+    # D. Inspect business detail and field provenances via API
     biz_id = biz_data["items"][0]["id"]
     detail_resp = client.get(f"/api/businesses/{biz_id}?run_id={run_id}")
     assert detail_resp.status_code == 200
     detail_data = detail_resp.json()
-    assert detail_data["name"] == biz_data["items"][0]["name"]
+    assert detail_data["name"] == first_biz_name
     assert len(detail_data["provenances"]) >= 1

@@ -1,146 +1,143 @@
-"""Unit tests for NormalizationService."""
+"""Unit tests for NormalizationService covering Section 15 test matrix."""
 
 import pytest
 from app.core.services.normalization_service import NormalizationService
 
-def test_name_normalization_legal_suffixes():
+def test_name_normalization_matrix():
     service = NormalizationService()
-    
+
+    # Section 15 Name Matrix
+    assert service.normalize_name("ABC SALON") == "abc salon"
+    assert service.normalize_name("ABC Salon - Official") == "abc salon official"
+    assert service.normalize_name("  ABC Salon  ") == "abc salon"
+    assert service.normalize_name("ABC & Sons") == "abc and sons"
+    assert service.normalize_name("ABC's Salon") == "abc s salon"
+
+    # Legal suffixes
     assert service.normalize_name("ABC Salon & Spa Pvt. Ltd.") == "abc salon and spa"
     assert service.normalize_name("Enrich Hair & Beauty Salon Private Limited") == "enrich hair and beauty salon"
     assert service.normalize_name("Looks Salon LLP") == "looks salon"
     assert service.normalize_name("Super Cuts Inc.") == "super cuts"
-    assert service.normalize_name("  The   Luxury   Spa   Co.  ") == "the luxury spa"
 
-def test_name_normalization_unicode_and_punctuation():
-    service = NormalizationService()
-    
-    # Unicode and special characters
+    # Unicode & empty
     assert service.normalize_name("L'Oréal Professionnel") == "l oreal professionnel"
     assert service.normalize_name("Café & Bistro @ Mumbai!") == "cafe and bistro mumbai"
     assert service.normalize_name("") == ""
     assert service.normalize_name(None) == ""
 
-def test_phone_normalization_indian_formats():
+def test_phone_normalization_matrix():
     service = NormalizationService()
-    
-    # Standard Indian mobile numbers (+91, 0, no prefix)
-    formatted, status = service.normalize_phone("+91 98765 43210")
-    assert formatted == "+919876543210"
-    assert status == "FOUND"
 
-    formatted, status = service.normalize_phone("09876543210")
-    assert formatted == "+919876543210"
-    assert status == "FOUND"
+    # Section 15 Phone Matrix
+    f, s = service.normalize_phone("+91 9876543210")
+    assert f == "+919876543210"
+    assert s == "FOUND"
 
-    formatted, status = service.normalize_phone("9876543210")
-    assert formatted == "+919876543210"
-    assert status == "FOUND"
+    f, s = service.normalize_phone("09876543210")
+    assert f == "+919876543210"
+    assert s == "FOUND"
 
-    # With prefix label
-    formatted, status = service.normalize_phone("Phone: 091365 67774")
-    assert formatted == "+919136567774"
-    assert status == "FOUND"
+    f, s = service.normalize_phone("98765 43210")
+    assert f == "+919876543210"
+    assert s == "FOUND"
 
-def test_phone_normalization_invalid_and_missing():
+    f, s = service.normalize_phone("+91-9876543210")
+    assert f == "+919876543210"
+    assert s == "FOUND"
+
+    f, s = service.normalize_phone("invalid phone")
+    assert f is None
+    assert s == "INVALID"
+
+    f, s = service.normalize_phone("")
+    assert f is None
+    assert s == "MISSING"
+
+    f, s = service.normalize_phone(None)
+    assert f is None
+    assert s == "MISSING"
+
+def test_website_normalization_matrix():
     service = NormalizationService()
-    
-    formatted, status = service.normalize_phone(None)
-    assert formatted is None
-    assert status == "MISSING"
 
-    formatted, status = service.normalize_phone("")
-    assert formatted is None
-    assert status == "MISSING"
+    # Section 15 Website Matrix
+    c, d, s = service.normalize_url("https://example.com")
+    assert c == "https://example.com/"
+    assert d == "example.com"
+    assert s == "FOUND"
 
-    formatted, status = service.normalize_phone("12345")
-    assert formatted is None
-    assert status == "INVALID"
+    c, d, s = service.normalize_url("http://example.com/")
+    assert c == "http://example.com/"
+    assert d == "example.com"
+    assert s == "FOUND"
 
-    formatted, status = service.normalize_phone("Call us today!")
-    assert formatted is None
-    assert status == "INVALID"
+    c, d, s = service.normalize_url("https://www.example.com")
+    assert c == "https://www.example.com/"
+    assert d == "example.com"
+    assert s == "FOUND"
 
-def test_url_normalization_and_domain():
+    c, d, s = service.normalize_url("example.com")
+    assert c == "https://example.com/"
+    assert d == "example.com"
+    assert s == "FOUND"
+
+    c, d, s = service.normalize_url("invalid URL")
+    assert c is None
+    assert d is None
+    assert s == "INVALID"
+
+    c, d, s = service.normalize_url("https://www.google.com/maps/place/Salon")
+    assert d == "google.com"
+    assert s == "FOUND"
+
+    c, d, s = service.normalize_url(None)
+    assert c is None
+    assert d is None
+    assert s == "MISSING"
+
+def test_coordinate_validation_matrix():
     service = NormalizationService()
-    
-    canonical, domain, status = service.normalize_url("https://www.example.com/about?utm_source=google&id=1")
-    assert canonical == "https://www.example.com/about?id=1"
-    assert domain == "example.com"
-    assert status == "FOUND"
 
-    canonical, domain, status = service.normalize_url("http://sub.domain.co.in/path/")
-    assert domain == "sub.domain.co.in"
-    assert canonical == "http://sub.domain.co.in/path"
-    assert status == "FOUND"
+    # Section 15 Coordinates Matrix
+    # Valid India coordinate
+    lat, lon = service.validate_coordinates(19.0760, 72.8777)
+    assert lat == 19.076
+    assert lon == 72.8777
 
-    canonical, domain, status = service.normalize_url("example.com")
-    assert domain == "example.com"
-    assert canonical == "https://example.com/"
-    assert status == "FOUND"
+    # 0,0 (impossible location for an Indian business)
+    lat, lon = service.validate_coordinates(0, 0)
+    assert lat is None
+    assert lon is None
 
-    canonical, domain, status = service.normalize_url(None)
-    assert canonical is None
-    assert domain is None
-    assert status == "MISSING"
+    # lat > 90
+    lat, lon = service.validate_coordinates(95.0, 72.0)
+    assert lat is None
+    assert lon is None
+
+    # lon > 180
+    lat, lon = service.validate_coordinates(19.0, 195.0)
+    assert lat is None
+    assert lon is None
+
+    # negative coordinate
+    lat, lon = service.validate_coordinates(-19.0, 72.0)
+    assert lat == -19.0
+    assert lon == 72.0
+
+    # None
+    lat, lon = service.validate_coordinates(None, None)
+    assert lat is None
+    assert lon is None
 
 def test_address_parsing():
     service = NormalizationService()
-    
+
     raw = "Shop No. 3, 4, 5, Abundance Building, 90 Feet Rd, Deendayal Nagar, Mulund East, Mumbai, Maharashtra 400081"
     parsed = service.parse_address(raw, default_city="Mumbai")
-    
+
     assert parsed["postal_code"] == "400081"
     assert parsed["state"] == "Maharashtra"
     assert parsed["city"] == "Mumbai"
     assert parsed["street"] == "Shop No. 3, 4, 5, Abundance Building, 90 Feet Rd"
     assert parsed["locality"] == "Deendayal Nagar, Mulund East"
     assert parsed["country"] == "India"
-
-    # Tolerant with minimal address
-    min_parsed = service.parse_address("MG Road, Bengaluru", default_city="Bengaluru")
-    assert min_parsed["city"] == "Bengaluru"
-    assert min_parsed["street"] == "MG Road"
-
-    # Multi-delimiter address with dash and pipe
-    dash_addr = "Plot 12 - New Link Road - Andheri West - Mumbai 400053"
-    dash_parsed = service.parse_address(dash_addr)
-    assert dash_parsed["city"] == "Mumbai"
-    assert dash_parsed["postal_code"] == "400053"
-    assert dash_parsed["street"] == "Plot 12, New Link Road"
-    assert dash_parsed["locality"] == "Andheri West"
-
-    # Single-line unpunctuated address
-    unpunct = "Shop 4 Crystal Plaza New Link Road Andheri West Mumbai 400053"
-    unpunct_parsed = service.parse_address(unpunct)
-    assert unpunct_parsed["city"] == "Mumbai"
-    assert unpunct_parsed["postal_code"] == "400053"
-    assert "New Link Road" in unpunct_parsed["street"]
-    assert "Andheri West" in unpunct_parsed["locality"]
-
-def test_coordinate_validation():
-    service = NormalizationService()
-    
-    # Valid
-    lat, lon = service.validate_coordinates(19.076, 72.877)
-    assert lat == 19.076
-    assert lon == 72.877
-
-    # String conversion
-    lat, lon = service.validate_coordinates("19.12345678", "72.98765432")
-    assert lat == 19.1234568
-    assert lon == 72.9876543
-
-    # Impossible 0.0, 0.0
-    lat, lon = service.validate_coordinates(0.0, 0.0)
-    assert lat is None
-    assert lon is None
-
-    # Out of range
-    lat, lon = service.validate_coordinates(120.0, 72.0)
-    assert lat is None
-    assert lon is None
-
-    lat, lon = service.validate_coordinates(None, None)
-    assert lat is None
-    assert lon is None

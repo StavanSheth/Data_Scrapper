@@ -64,15 +64,21 @@ class GoogleMapsScraper:
                 # 2. Dismiss cookie consent if shown
                 await self._handle_consent(page)
 
-                # 3. Wait for feed or place elements
-                feed_found = await self._wait_for_feed(page)
-                if not feed_found:
+                # 3. Wait for feed or place elements with error differentiation
+                has_feed, is_zero_results, feed_err = await self._inspect_feed_status(page)
+                if is_zero_results:
+                    logger.info("Valid zero-result search for '%s in %s'.", category, city)
                     return
+                if not has_feed:
+                    logger.error("FEED_NOT_FOUND: Search results container not detected for query: %s", search_url)
+                    raise RuntimeError("FEED_NOT_FOUND: Search results container not found")
 
                 seen_place_ids: set[str] = set(initial_seen_place_ids or set())
                 seen_urls: set[str] = set(initial_seen_urls or set())
                 count_yielded = 0
                 scroll_attempts = 0
+                consecutive_zero_new = 0
+                max_consecutive_zero_new = 5
                 max_scroll_attempts = max(10, (limit // 5) + 8 + (len(seen_place_ids) // 5))
 
                 # Checkpoint resumption fast-forward: if places were already seen, fast-scroll
@@ -92,6 +98,7 @@ class GoogleMapsScraper:
 
                     # Collect candidate links via multiple selector strategies
                     links = await self._find_place_links(page)
+                    new_yielded_in_iteration = 0
 
                     for link in links:
                         if count_yielded >= limit:
@@ -178,6 +185,7 @@ class GoogleMapsScraper:
                             )
 
                             count_yielded += 1
+                            new_yielded_in_iteration += 1
                             yield raw_record
 
                         except Exception as exc:
@@ -189,6 +197,7 @@ class GoogleMapsScraper:
                                 exc_info=True,
                             )
                             count_yielded += 1
+                            new_yielded_in_iteration += 1
                             yield RawGoogleRecord(
                                 place_id=current_place_id,
                                 name=current_name if current_name != "Unknown" else "Failed Extraction",
@@ -202,8 +211,21 @@ class GoogleMapsScraper:
                                 profile_url=current_href,
                             )
 
+                    if new_yielded_in_iteration == 0:
+                        consecutive_zero_new += 1
+                        if consecutive_zero_new >= max_consecutive_zero_new:
+                            logger.info(
+                                "No new places discovered after %d consecutive scroll attempts. Terminating discovery loop.",
+                                consecutive_zero_new,
+                            )
+                            break
+                    else:
+                        consecutive_zero_new = 0
+
                     # Scroll feed to load more places
                     if count_yielded < limit:
+                        if cancel_check and cancel_check():
+                            break
                         scroll_attempts += 1
                         feed = await page.query_selector('div[role="feed"]')
                         if feed:
@@ -214,7 +236,10 @@ class GoogleMapsScraper:
                             await page.wait_for_timeout(2000)
 
                         end_text = await page.query_selector('text="You\'ve reached the end of the list"')
+                        if not end_text:
+                            end_text = await page.query_selector('text="No more results"')
                         if end_text:
+                            logger.info("Reached genuine end of Google Maps feed.")
                             break
 
             finally:
@@ -358,15 +383,25 @@ class GoogleMapsScraper:
         return rating, review_count
 
     async def _navigate_with_retry(self, page: Page, url: str) -> None:
-        """Navigates to URL with retry for transient errors."""
+        """Navigates to URL with retry for transient errors and differentiated failure categorization."""
         for attempt in range(self.max_retries + 1):
             try:
-                await page.goto(url, wait_until="domcontentloaded", timeout=self.request_timeout)
+                response = await page.goto(url, wait_until="domcontentloaded", timeout=self.request_timeout)
+                if response and response.status >= 400:
+                    raise RuntimeError(f"GOOGLE_RESPONSE_FAILED: Received HTTP status {response.status}")
                 await page.wait_for_timeout(2000)
                 return
             except Exception as e:
+                err_str = str(e).lower()
+                if "target closed" in err_str or "browser has been closed" in err_str:
+                    raise RuntimeError(f"BROWSER_START_FAILED: {e}") from e
                 if attempt == self.max_retries:
-                    raise e
+                    if "timeout" in err_str:
+                        raise TimeoutError(f"NAVIGATION_FAILED: Timeout while loading Google Maps ({e})") from e
+                    elif "net::err" in err_str or "dns" in err_str or "connection" in err_str:
+                        raise ConnectionError(f"NAVIGATION_FAILED: Network failure while reaching Google Maps ({e})") from e
+                    else:
+                        raise RuntimeError(f"NAVIGATION_FAILED: {e}") from e
                 await asyncio.sleep(2)
 
     async def _handle_consent(self, page: Page) -> None:
@@ -382,13 +417,35 @@ class GoogleMapsScraper:
         except Exception:
             pass
 
-    async def _wait_for_feed(self, page: Page) -> bool:
-        """Waits for search feed, result cards, or direct place views to appear."""
+    async def _inspect_feed_status(self, page: Page) -> tuple[bool, bool, Optional[str]]:
+        """
+        Differentiates feed status:
+        Returns: (has_feed: bool, is_valid_zero_results: bool, failure_code: Optional[str])
+        """
         try:
-            await page.wait_for_selector(
+            feed_el = await page.wait_for_selector(
                 'div[role="feed"], div[role="article"], a[href*="/maps/place/"], h1.DUwDvf',
-                timeout=15000,
+                timeout=12000,
             )
-            return True
+            if feed_el or (page.url and "/maps/place/" in page.url):
+                return True, False, None
         except Exception:
-            return bool(page.url and "/maps/place/" in page.url)
+            if page.url and "/maps/place/" in page.url:
+                return True, False, None
+
+        # Check if page explicitly indicates a valid zero-result search
+        try:
+            body_text = await page.inner_text("body")
+            zero_result_phrases = [
+                "no results found",
+                "can't find",
+                "cannot find",
+                "make sure your search is spelled correctly",
+                "try searching for a city, an address",
+            ]
+            if any(p in body_text.lower() for p in zero_result_phrases):
+                return False, True, None
+        except Exception:
+            pass
+
+        return False, False, "FEED_NOT_FOUND"

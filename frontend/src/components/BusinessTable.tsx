@@ -48,7 +48,15 @@ export const BusinessTable: React.FC<Props> = ({
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onSearchChange(searchInput);
+    if (searchInput !== search) {
+      onSearchChange(searchInput);
+    }
+  };
+
+  const handleBlur = () => {
+    if (searchInput !== search) {
+      onSearchChange(searchInput);
+    }
   };
 
   const renderSortIcon = (field: string) => {
@@ -72,7 +80,7 @@ export const BusinessTable: React.FC<Props> = ({
             type="text"
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
-            onBlur={() => onSearchChange(searchInput)}
+            onBlur={handleBlur}
             placeholder="Search business name, address, phone, category..."
             className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-9 pr-3 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
           />
@@ -91,7 +99,7 @@ export const BusinessTable: React.FC<Props> = ({
             <option value={100}>100</option>
           </select>
           <span className="text-slate-300 font-medium">
-            Total: <span className="text-emerald-400 font-mono">{data.total}</span>
+            Total: <span className="text-emerald-400 font-mono">{data?.total || 0}</span>
           </span>
         </div>
       </div>
@@ -137,7 +145,7 @@ export const BusinessTable: React.FC<Props> = ({
                   <p>Loading business records...</p>
                 </td>
               </tr>
-            ) : data.items.length === 0 ? (
+            ) : (data?.items || []).length === 0 ? (
               <tr>
                 <td colSpan={8} className="py-12 text-center text-slate-400">
                   <p className="text-base font-medium text-slate-300">No businesses found</p>
@@ -147,7 +155,7 @@ export const BusinessTable: React.FC<Props> = ({
                 </td>
               </tr>
             ) : (
-              data.items.map((b) => (
+              (data?.items || []).map((b) => (
                 <tr
                   key={b.id}
                   className="hover:bg-slate-800/40 transition-colors group"

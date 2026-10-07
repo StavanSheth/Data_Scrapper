@@ -108,8 +108,11 @@ class GoogleMapsParser:
                 data["opening_hours"] = cleaned
                 continue
 
-            # 3. Check for phone number inside line
-            phone_match = re.search(r"(?:\+91[\s-]?)?[6-9]\d{4}[\s-]?\d{5}\b|\b0\d{2,4}[-\s]?\d{6,8}\b", cleaned)
+            # 3. Check for phone number inside line (supports +91, leading 0 mobile, and spaced landlines)
+            phone_match = re.search(
+                r"(?:\+91[\s-]?|0)[6-9]\d{4}[\s-]?\d{5}\b|[6-9]\d{4}[\s-]?\d{5}\b|\b0\d{2,4}[-\s]?(?:\d{3,4}[-\s]?\d{3,4}|\d{6,8})\b",
+                cleaned,
+            )
             if phone_match and not data["phone"]:
                 data["phone"] = phone_match.group(0).strip()
 

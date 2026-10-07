@@ -26,8 +26,8 @@ export function useBusinesses(activeRunId?: string) {
       setError(null);
       const res = await fetchBusinesses(activeRunId, page, pageSize, search, sortBy, sortOrder);
       setData(res);
-    } catch (err: any) {
-      const msg = err?.message || 'Failed to load businesses';
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to load businesses';
       setError(msg);
       console.error('Failed to load businesses:', err);
     } finally {

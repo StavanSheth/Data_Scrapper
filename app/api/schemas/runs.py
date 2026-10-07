@@ -23,8 +23,10 @@ class RunResponse(BaseModel):
     completed_at: Optional[str] = None
     cancelled_at: Optional[str] = None
     records_discovered: int = 0
+    records_attempted: int = 0
     records_saved: int = 0
     records_failed: int = 0
+    records_duplicates: int = 0
     error_count: int = 0
     error_message: Optional[str] = None
     created_at: str

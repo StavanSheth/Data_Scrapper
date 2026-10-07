@@ -38,10 +38,25 @@ class RunRepository:
         completed_at: Optional[str] = None,
         cancelled_at: Optional[str] = None,
         error_message: Optional[str] = None,
+        force: bool = False,
     ) -> Optional[RunModel]:
         run = self.get_by_id(run_id)
         if not run:
             return None
+
+        # Validate lifecycle state transition unless forced
+        if not force and run.status != status:
+            from app.core.domain.enums import RunStatus, VALID_STATUS_TRANSITIONS
+            try:
+                curr_enum = RunStatus(run.status)
+                new_enum = RunStatus(status)
+                allowed = VALID_STATUS_TRANSITIONS.get(curr_enum, set())
+                if new_enum not in allowed:
+                    raise ValueError(f"Invalid run status transition from '{run.status}' to '{status}'")
+            except ValueError as ve:
+                if "Invalid run status transition" in str(ve):
+                    raise
+
         run.status = status
         if started_at:
             run.started_at = started_at
@@ -49,7 +64,7 @@ class RunRepository:
             run.completed_at = completed_at
         if cancelled_at:
             run.cancelled_at = cancelled_at
-        if error_message:
+        if error_message is not None:
             run.error_message = error_message
         self.db.commit()
         self.db.refresh(run)
@@ -61,6 +76,8 @@ class RunRepository:
         discovered: Optional[int] = None,
         saved: Optional[int] = None,
         failed: Optional[int] = None,
+        attempted: Optional[int] = None,
+        duplicates: Optional[int] = None,
         error_count: Optional[int] = None,
     ) -> Optional[RunModel]:
         run = self.get_by_id(run_id)
@@ -69,10 +86,14 @@ class RunRepository:
         if discovered is not None:
             run.records_discovered = discovered
             run.total_google_records = discovered
+        if attempted is not None:
+            run.records_attempted = attempted
         if saved is not None:
             run.records_saved = saved
         if failed is not None:
             run.records_failed = failed
+        if duplicates is not None:
+            run.records_duplicates = duplicates
         if error_count is not None:
             run.error_count = error_count
         self.db.commit()

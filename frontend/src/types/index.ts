@@ -2,6 +2,7 @@ export type RunStatus =
   | 'CREATED'
   | 'QUEUED'
   | 'RUNNING'
+  | 'INTERRUPTED'
   | 'COMPLETED'
   | 'PARTIAL'
   | 'FAILED'
@@ -20,8 +21,10 @@ export interface Run {
   completed_at?: string;
   cancelled_at?: string;
   records_discovered: number;
+  records_attempted?: number;
   records_saved: number;
   records_failed: number;
+  records_duplicates?: number;
   error_count: number;
   error_message?: string;
   created_at: string;

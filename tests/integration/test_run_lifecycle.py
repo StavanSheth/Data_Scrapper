@@ -69,28 +69,29 @@ async def test_partial_failure_handling(db_context):
         )
 
     worker = RunWorker()
-    with patch("app.workers.run_worker.GoogleMapsScraper.scrape", side_effect=mock_scrape):
-        # Override get_db_context in worker to use our test DB
-        from contextlib import contextmanager
-        @contextmanager
-        def test_db_ctx():
-            s = TestingSession()
-            try:
-                yield s
-                s.commit()
-            except Exception:
-                s.rollback()
-                raise
-            finally:
-                s.close()
+    worker.scraper.scrape = mock_scrape
 
-        with patch("app.workers.run_worker.get_db_context", side_effect=test_db_ctx):
-            await worker.execute_run(
-                run_id="run_lifecycle_01",
-                city="Mumbai",
-                category="Salon",
-                limit=4,
-            )
+    # Override get_db_context in worker to use our test DB
+    from contextlib import contextmanager
+    @contextmanager
+    def test_db_ctx():
+        s = TestingSession()
+        try:
+            yield s
+            s.commit()
+        except Exception:
+            s.rollback()
+            raise
+        finally:
+            s.close()
+
+    with patch("app.workers.run_worker.get_db_context", side_effect=test_db_ctx):
+        await worker.execute_run(
+            run_id="run_lifecycle_01",
+            city="Mumbai",
+            category="Salon",
+            limit=4,
+        )
 
     # Verify run status is PARTIAL
     session = TestingSession()

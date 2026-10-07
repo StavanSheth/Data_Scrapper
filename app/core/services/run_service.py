@@ -32,6 +32,10 @@ class RunService:
             raise ValueError("Category must not be empty.")
         if limit <= 0:
             raise ValueError("Limit must be greater than 0.")
+        if limit > 1000:
+            raise ValueError("Limit must be less than or equal to 1000.")
+        if confidence_threshold < 0.0 or confidence_threshold > 1.0:
+            raise ValueError("Confidence threshold must be between 0.0 and 1.0.")
 
         clean_city = city.strip()
         clean_cat = category.strip()
@@ -116,6 +120,8 @@ class RunService:
         run = self.run_repo.get_by_id(run_id)
         if not run:
             return None
+        if run.status in ["COMPLETED", "FAILED", "CANCELLED"]:
+            raise ValueError(f"Cannot cancel run in '{run.status}' state.")
         now_iso = datetime.now(timezone.utc).isoformat()
         self.run_repo.update_status(run_id, status="CANCELLED", cancelled_at=now_iso)
         TaskManager.cancel(run_id)

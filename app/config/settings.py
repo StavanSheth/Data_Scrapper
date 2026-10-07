@@ -1,6 +1,5 @@
 """Application configuration and settings."""
 
-import os
 from pydantic_settings import BaseSettings
 from app.config.constants import DEFAULT_DB_PATH
 
@@ -9,8 +8,8 @@ class Settings(BaseSettings):
     app_version: str = "1.0.0"
     debug: bool = False
     
-    # Database
-    database_url: str = os.getenv("DATABASE_URL", f"sqlite:///{DEFAULT_DB_PATH.as_posix()}")
+    # Database (overridable via DATABASE_URL env var)
+    database_url: str = f"sqlite:///{DEFAULT_DB_PATH.as_posix()}"
     
     # Scraper settings
     request_timeout: int = 30

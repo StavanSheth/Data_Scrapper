@@ -13,6 +13,7 @@ from app.database.repositories.source_record_repository import SourceRecordRepos
 from app.database.repositories.business_repository import BusinessRepository
 from app.scraping.maps.google_maps_scraper import GoogleMapsScraper
 from app.core.services.validation_service import ValidationService
+from app.core.domain.failure_codes import FailureCode
 from app.core.events import event_bus
 
 logger = logging.getLogger("run_worker")
@@ -29,14 +30,17 @@ async def broadcast_event(run_id: str, event_data: dict) -> None:
 class TaskManager:
     """Supervises in-process async tasks to prevent unhandled background task death."""
     _active_tasks: Dict[str, asyncio.Task] = {}
+    _cancelled_runs: Set[str] = set()
 
     @classmethod
     def spawn(cls, run_id: str, coro) -> asyncio.Task:
+        cls._cancelled_runs.discard(run_id)
         task = asyncio.create_task(coro)
         cls._active_tasks[run_id] = task
 
         def _on_done(t: asyncio.Task):
             cls._active_tasks.pop(run_id, None)
+            cls._cancelled_runs.discard(run_id)
             if t.cancelled():
                 logger.info(f"Task for run {run_id} was cancelled.")
             elif t.exception():
@@ -47,6 +51,7 @@ class TaskManager:
 
     @classmethod
     def cancel(cls, run_id: str) -> bool:
+        cls._cancelled_runs.add(run_id)
         task = cls._active_tasks.get(run_id)
         if task and not task.done():
             task.cancel()
@@ -61,8 +66,9 @@ class TaskManager:
             return repo.recover_stale_runs()
 
 class RunWorker:
-    def __init__(self):
+    def __init__(self, scraper: Optional[GoogleMapsScraper] = None):
         self.validation_service = ValidationService()
+        self.scraper = scraper or GoogleMapsScraper()
 
     async def execute_run(
         self,
@@ -73,7 +79,7 @@ class RunWorker:
     ) -> None:
         """Executes the Google Maps discovery run with persistent checkpointing."""
         # ponytail: Checkpoint reconstruction from SQLite source records across process crashes, upgrade trigger: distributed persistent browser session / remote CDP worker pool.
-        scraper = GoogleMapsScraper()
+        scraper = self.scraper
 
         # Checkpoint resumption: query previously extracted records and progress
         existing_place_ids: set[str] = set()
@@ -81,6 +87,8 @@ class RunWorker:
         already_saved = 0
         already_failed = 0
         already_discovered = 0
+        already_attempted = 0
+        already_duplicates = 0
 
         with get_db_context() as db:
             src_repo = SourceRecordRepository(db)
@@ -92,6 +100,8 @@ class RunWorker:
                 already_saved = run_model.records_saved or 0
                 already_failed = run_model.records_failed or 0
                 already_discovered = run_model.records_discovered or 0
+                already_attempted = getattr(run_model, "records_attempted", 0) or already_discovered
+                already_duplicates = getattr(run_model, "records_duplicates", 0) or 0
 
             now_iso = datetime.now(timezone.utc).isoformat()
             run_repo.update_status(
@@ -101,10 +111,12 @@ class RunWorker:
             )
 
         discovered = already_discovered
+        attempted = already_attempted
         saved = already_saved
         failed = already_failed
+        duplicates = already_duplicates
         error_msg = None
-        remaining_limit = max(0, limit - saved)
+        failure_code = None
 
         await broadcast_event(run_id, {
             "event": "run.started",
@@ -117,7 +129,10 @@ class RunWorker:
         })
 
         def is_cancelled() -> bool:
-            # Query SQLite database state directly for persistent cancellation
+            # Check fast in-memory cancellation set first
+            if run_id in TaskManager._cancelled_runs:
+                return True
+            # Query SQLite database state directly for persistent cross-process cancellation
             try:
                 with get_db_context() as db:
                     repo = RunRepository(db)
@@ -126,12 +141,18 @@ class RunWorker:
                 return False
 
         try:
+            # Limit represents maximum accepted canonical businesses.
+            # We buffer candidate generation up to (remaining * 3 + 30) so failures or duplicates
+            # do not prematurely terminate before reaching the accepted limit.
+            remaining_limit = max(0, limit - saved)
+            candidate_buffer = max(remaining_limit * 3, remaining_limit + 30)
+
             if remaining_limit > 0:
                 # Stream records from scraper resuming from checkpoint
                 async for raw_record in scraper.scrape(
                     city=city,
                     category=category,
-                    limit=remaining_limit,
+                    limit=candidate_buffer,
                     run_id=run_id,
                     cancel_check=is_cancelled,
                     initial_seen_place_ids=existing_place_ids,
@@ -141,6 +162,7 @@ class RunWorker:
                         break
 
                     discovered += 1
+                    attempted += 1
                     source_record_id = f"src_{uuid.uuid4().hex[:12]}"
 
                     # Atomic persistence: store source record, business entity, provenances, and progress counts in one transaction
@@ -202,7 +224,9 @@ class RunWorker:
                                     address=business.address,
                                 )
 
-                                if not duplicate:
+                                if duplicate:
+                                    duplicates += 1
+                                else:
                                     biz_model = BusinessModel(
                                         id=business.business_id,
                                         run_id=run_id,
@@ -241,65 +265,85 @@ class RunWorker:
                                         saved += 1
                                     else:
                                         # Duplicate caught by DB unique constraint
-                                        pass
-                                else:
-                                    # Already exists in current run
-                                    pass
+                                        duplicates += 1
 
                         # Update run progress counts in SQLite atomically within same transaction
                         run_repo = RunRepository(db)
                         run_repo.update_counts(
                             run_id=run_id,
                             discovered=discovered,
+                            attempted=attempted,
                             saved=saved,
                             failed=failed,
+                            duplicates=duplicates,
                         )
 
-                    # Broadcast live progress accurately: (saved + failed) / limit
-                    total_processed = saved + failed
-                    pct = int((total_processed / max(limit, 1)) * 100)
+                    # Broadcast live progress: saved / requested limit
+                    pct = int((saved / max(limit, 1)) * 100)
                     await broadcast_event(run_id, {
                         "event": "run.progress",
                         "run_id": run_id,
                         "status": "RUNNING",
                         "stage": "DISCOVERING_GOOGLE",
                         "discovered": discovered,
+                        "attempted": attempted,
                         "saved": saved,
                         "failed": failed,
+                        "duplicates": duplicates,
                         "percentage": min(pct, 100),
                     })
+
+                    # Stop if requested limit of accepted canonical businesses has been reached
+                    if saved >= limit:
+                        logger.info("Reached target limit of %d accepted businesses. Ending discovery.", limit)
+                        break
 
         except asyncio.CancelledError:
             # Task cancellation requested
             error_msg = "Run was cancelled by user."
+            failure_code = FailureCode.CANCELLED_BY_USER.value
         except Exception as e:
             logger.error(f"Error in scraping run {run_id}: {e}", exc_info=True)
-            error_msg = "An unexpected error occurred during scraping."
+            error_msg = str(e) or "An unexpected error occurred during scraping."
+            err_lower = error_msg.lower()
+            if "browser_start_failed" in err_lower:
+                failure_code = FailureCode.BROWSER_START_FAILED.value
+            elif "navigation_failed" in err_lower:
+                failure_code = FailureCode.NAVIGATION_FAILED.value
+            elif "feed_not_found" in err_lower:
+                failure_code = FailureCode.FEED_NOT_FOUND.value
+            else:
+                failure_code = FailureCode.UNKNOWN_ERROR.value
             failed += 1
 
         finally:
             now_iso = datetime.now(timezone.utc).isoformat()
-            final_status = "COMPLETED"
-
-            # Check if cancelled in DB
             cancelled = is_cancelled()
 
             if cancelled:
                 final_status = "CANCELLED"
             elif error_msg and saved == 0 and not cancelled:
                 final_status = "FAILED"
-            elif failed > 0 and saved > 0:
+            elif saved >= limit:
+                final_status = "COMPLETED"
+            elif saved > 0 and failed > 0:
                 final_status = "PARTIAL"
+            elif saved > 0:
+                final_status = "COMPLETED"
             elif saved == 0 and discovered > 0:
                 final_status = "FAILED"
+            else:
+                final_status = "COMPLETED"
 
             with get_db_context() as db:
                 run_repo = RunRepository(db)
                 run_repo.update_counts(
                     run_id=run_id,
                     discovered=discovered,
+                    attempted=attempted,
                     saved=saved,
                     failed=failed,
+                    duplicates=duplicates,
                     error_count=failed,
                 )
                 run_repo.update_status(
@@ -315,8 +359,10 @@ class RunWorker:
                 "run_id": run_id,
                 "status": final_status,
                 "discovered": discovered,
+                "attempted": attempted,
                 "saved": saved,
                 "failed": failed,
+                "duplicates": duplicates,
                 "percentage": 100,
                 "completed_at": now_iso,
                 "error_message": error_msg,
