@@ -25,8 +25,19 @@ class Settings(BaseSettings):
         "Chrome/124.0.0.0 Safari/537.36"
     )
     
-    # API settings
+    # API and CORS settings
     api_prefix: str = "/api"
+    cors_origins: list[str] = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
+
+    # Database timeouts & pagination
+    db_busy_timeout_ms: int = 30000
+    default_page_size: int = 50
+    max_page_size: int = 200
 
     model_config = {"env_file": ".env", "extra": "allow"}
 

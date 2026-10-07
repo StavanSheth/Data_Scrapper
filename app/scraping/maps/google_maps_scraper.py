@@ -27,11 +27,15 @@ class GoogleMapsScraper:
         limit: int,
         run_id: str,
         cancel_check: Optional[Callable[[], bool]] = None,
+        initial_seen_place_ids: Optional[set[str]] = None,
+        initial_seen_urls: Optional[set[str]] = None,
     ) -> AsyncGenerator[RawGoogleRecord, None]:
         """
         Scrapes Google Maps using multi-strategy fallback extraction.
         Yields RawGoogleRecord as each business is discovered.
+        Supports seamless checkpoint resumption by skipping previously stored place IDs/URLs.
         """
+        # ponytail: Single-worker local Playwright Chromium session with feed scroll discovery; upgrade trigger: Slice 2 multi-worker distributed scraping.
         query = f"{category} in {city}".strip()
         encoded_query = query.replace(" ", "+")
         search_url = f"https://www.google.com/maps/search/{encoded_query}"
@@ -65,11 +69,22 @@ class GoogleMapsScraper:
                 if not feed_found:
                     return
 
-                seen_place_ids: set[str] = set()
-                seen_urls: set[str] = set()
+                seen_place_ids: set[str] = set(initial_seen_place_ids or set())
+                seen_urls: set[str] = set(initial_seen_urls or set())
                 count_yielded = 0
                 scroll_attempts = 0
-                max_scroll_attempts = max(10, (limit // 5) + 8)
+                max_scroll_attempts = max(10, (limit // 5) + 8 + (len(seen_place_ids) // 5))
+
+                # Checkpoint resumption fast-forward: if places were already seen, fast-scroll
+                if seen_place_ids:
+                    feed = await page.query_selector('div[role="feed"]')
+                    fast_scrolls = min(6, max(1, len(seen_place_ids) // 4))
+                    for _ in range(fast_scrolls):
+                        if feed:
+                            await page.evaluate('(el) => el.scrollTop = el.scrollHeight', feed)
+                        else:
+                            await page.evaluate('() => window.scrollBy(0, 1000)')
+                        await page.wait_for_timeout(1000)
 
                 while count_yielded < limit and scroll_attempts < max_scroll_attempts:
                     if cancel_check and cancel_check():

@@ -25,25 +25,17 @@ Base = declarative_base()
 from sqlalchemy import text
 from datetime import datetime, timezone
 
+import app.database.migrations  # noqa: F401
+from app.database.migrations.runner import MigrationRunner
+
 def init_db():
     """
-    Initializes database schema, creates SQLite tables, and establishes version tracking.
-    Enables safe, incremental migrations for Slice 2 and beyond.
+    Initializes database schema and executes any pending versioned migrations.
+    Provides formal, transaction-safe schema evolution across all slices.
     """
     Base.metadata.create_all(bind=engine)
-    with engine.begin() as conn:
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS schema_version (
-                version INTEGER PRIMARY KEY,
-                name TEXT NOT NULL,
-                applied_at TEXT NOT NULL
-            )
-        """))
-        now_iso = datetime.now(timezone.utc).isoformat()
-        conn.execute(
-            text("INSERT OR IGNORE INTO schema_version (version, name, applied_at) VALUES (1, 'slice_1_initial', :applied_at)"),
-            {"applied_at": now_iso}
-        )
+    applied = MigrationRunner.run_pending(engine)
+    return applied
 
 def get_schema_version() -> int:
     """Returns the current applied schema version."""

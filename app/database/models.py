@@ -142,6 +142,8 @@ class FieldProvenanceModel(Base):
     source_record_id = Column(String, nullable=True)
     extraction_method = Column(String, nullable=True)
     confidence = Column(Float, nullable=True)
+    raw_fragment = Column(Text, nullable=True)  # Raw snippet/text from source
+    validator_rule = Column(String, nullable=True)  # Validation or normalization rule applied
     extracted_at = Column(String, nullable=False)
 
     business = relationship("BusinessModel", back_populates="provenances")

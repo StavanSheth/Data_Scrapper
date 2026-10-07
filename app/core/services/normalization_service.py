@@ -196,6 +196,7 @@ class NormalizationService:
         street, locality, city, state, postal_code, country.
         Robust to multi-part premises, unformatted landmarks, and missing fields.
         """
+        # ponytail: Indian address parsing uses deterministic morphological tokens and hierarchical postal tail heuristics; upgrade trigger: Slice 3 address enrichment or libpostal binding.
         result: Dict[str, Optional[str]] = {
             "street": None,
             "locality": None,

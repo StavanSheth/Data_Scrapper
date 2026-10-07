@@ -1,13 +1,8 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import type { Run, Business, PaginatedBusinesses, CreateRunPayload } from './types';
-import {
-  fetchRuns,
-  fetchRun,
-  createRun,
-  cancelRun,
-  fetchBusinesses,
-  checkHealth,
-} from './services/api';
+import React, { useState } from 'react';
+import type { CreateRunPayload } from './types';
+import { useRuns } from './hooks/useRuns';
+import { useBusinesses } from './hooks/useBusinesses';
+import { useRunMonitor } from './hooks/useRunMonitor';
 import { Navbar } from './components/Navbar';
 import { Dashboard } from './components/Dashboard';
 import { RunMonitor } from './components/RunMonitor';
@@ -17,166 +12,68 @@ import { NewRunModal } from './components/NewRunModal';
 import { ArrowLeft, RefreshCw } from 'lucide-react';
 
 export const App: React.FC = () => {
-  const [runs, setRuns] = useState<Run[]>([]);
-  const [activeRun, setActiveRun] = useState<Run | null>(null);
-  const [businessesData, setBusinessesData] = useState<PaginatedBusinesses>({
-    items: [],
-    page: 1,
-    page_size: 50,
-    total: 0,
-    total_pages: 1,
-  });
+  const {
+    runs,
+    activeRun,
+    setActiveRun,
+    isHealthy,
+    loadRuns,
+    createNewRun,
+    cancelActiveRun,
+  } = useRuns();
 
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
-  const [search, setSearch] = useState('');
-  const [sortBy, setSortBy] = useState('created_at');
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const {
+    data: businessesData,
+    page,
+    setPage,
+    pageSize,
+    setPageSize,
+    search,
+    handleSearch,
+    sortBy,
+    sortOrder,
+    handleSort,
+    loading: tableLoading,
+    reload: reloadBusinesses,
+    inspectedBusiness,
+    setInspectedBusiness,
+  } = useBusinesses(activeRun?.id);
 
-  const [inspectedBusiness, setInspectedBusiness] = useState<Business | null>(null);
   const [isNewRunOpen, setIsNewRunOpen] = useState(false);
-  const [isHealthy, setIsHealthy] = useState(false);
-  const [tableLoading, setTableLoading] = useState(false);
 
-  const wsRef = useRef<WebSocket | null>(null);
-
-  // Health check on load and interval
-  useEffect(() => {
-    const pingHealth = () => {
-      checkHealth()
-        .then(() => setIsHealthy(true))
-        .catch(() => setIsHealthy(false));
-    };
-    pingHealth();
-    const interval = setInterval(pingHealth, 15000);
-    return () => clearInterval(interval);
-  }, []);
-
-  // Fetch runs
-  const loadRuns = useCallback(async () => {
-    try {
-      const data = await fetchRuns();
-      setRuns(data);
-    } catch (e) {
-      console.error('Error fetching runs:', e);
+  // Real-time WebSocket monitoring with polling fallback
+  useRunMonitor(
+    activeRun,
+    (updated) => {
+      setActiveRun(updated);
+      loadRuns();
+      reloadBusinesses();
+    },
+    () => {
+      reloadBusinesses();
     }
-  }, []);
+  );
 
-  useEffect(() => {
-    loadRuns();
-  }, [loadRuns]);
-
-  // Fetch businesses for active run
-  const loadBusinesses = useCallback(async () => {
-    if (!activeRun) return;
-    try {
-      setTableLoading(true);
-      const res = await fetchBusinesses(
-        activeRun.id,
-        page,
-        pageSize,
-        search,
-        sortBy,
-        sortOrder
-      );
-      setBusinessesData(res);
-    } catch (e) {
-      console.error('Error fetching businesses:', e);
-    } finally {
-      setTableLoading(false);
-    }
-  }, [activeRun, page, pageSize, search, sortBy, sortOrder]);
-
-  useEffect(() => {
-    if (activeRun) {
-      loadBusinesses();
-    }
-  }, [activeRun, loadBusinesses]);
-
-  // WebSocket or polling for active run progress
-  useEffect(() => {
-    if (!activeRun) return;
-
-    // Connect WebSocket
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const defaultWsBase = `${wsProtocol}//${window.location.host}/ws`;
-    const wsBase = import.meta.env.VITE_WS_BASE_URL || defaultWsBase;
-    const wsUrl = `${wsBase}/runs/${activeRun.id}`;
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.run_id === activeRun.id) {
-          setActiveRun((prev) => (prev ? { ...prev, ...msg } : prev));
-          // Refresh runs list and table when progress updates
-          loadRuns();
-          loadBusinesses();
-        }
-      } catch (err) {
-        console.error('WebSocket parse error:', err);
-      }
-    };
-
-    ws.onerror = () => {
-      // WS error: polling fallback handles it below
-    };
-
-    // Polling fallback every 3 seconds if run is active
-    const pollInterval = setInterval(async () => {
-      if (['RUNNING', 'QUEUED'].includes(activeRun.status)) {
-        try {
-          const fresh = await fetchRun(activeRun.id);
-          setActiveRun(fresh);
-          loadBusinesses();
-          loadRuns();
-        } catch {
-          // Ignore polling errors
-        }
-      }
-    }, 3000);
-
-    return () => {
-      ws.close();
-      clearInterval(pollInterval);
-    };
-  }, [activeRun?.id, activeRun?.status, loadBusinesses, loadRuns]);
-
-  // Handlers
   const handleCreateRun = async (payload: CreateRunPayload) => {
-    const newRun = await createRun(payload);
-    await loadRuns();
-    setActiveRun(newRun);
+    await createNewRun(payload);
     setPage(1);
-    setSearch('');
   };
 
   const handleCancelRun = async () => {
     if (!activeRun) return;
-    await cancelRun(activeRun.id);
-    const fresh = await fetchRun(activeRun.id);
-    setActiveRun(fresh);
-    await loadRuns();
-  };
-
-  const handleSortChange = (field: string) => {
-    if (sortBy === field) {
-      setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'));
-    } else {
-      setSortBy(field);
-      setSortOrder('desc');
-    }
-    setPage(1);
+    await cancelActiveRun(activeRun.id);
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans antialiased selection:bg-emerald-500/30 selection:text-emerald-300">
       <Navbar
-        onNewRunClick={() => setIsNewRunOpen(true)}
+        onNewRunClick={() => {
+          setActiveRun(null);
+          setIsNewRunOpen(true);
+        }}
         onRefresh={() => {
           loadRuns();
-          if (activeRun) loadBusinesses();
+          reloadBusinesses();
         }}
         onDashboardClick={() => setActiveRun(null)}
         isHealthy={isHealthy}
@@ -213,7 +110,7 @@ export const App: React.FC = () => {
                   Discovered & Normalized Businesses
                 </h3>
                 <button
-                  onClick={loadBusinesses}
+                  onClick={reloadBusinesses}
                   className="flex items-center space-x-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors"
                 >
                   <RefreshCw className="w-3.5 h-3.5" />
@@ -233,11 +130,8 @@ export const App: React.FC = () => {
                   setPageSize(ps);
                   setPage(1);
                 }}
-                onSearchChange={(s) => {
-                  setSearch(s);
-                  setPage(1);
-                }}
-                onSortChange={handleSortChange}
+                onSearchChange={handleSearch}
+                onSortChange={handleSort}
                 onInspect={(b) => setInspectedBusiness(b)}
                 loading={tableLoading}
               />
@@ -249,7 +143,6 @@ export const App: React.FC = () => {
             onSelectRun={(run) => {
               setActiveRun(run);
               setPage(1);
-              setSearch('');
             }}
             onNewRunClick={() => setIsNewRunOpen(true)}
           />

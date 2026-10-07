@@ -103,10 +103,17 @@ class ValidationService:
             updated_at=now_iso,
         )
 
-        # Build Field Provenance with realistic, calibrated confidence scores
+        # Build Field Provenance with realistic, calibrated confidence scores and validation rules
         provenances: List[FieldProvenanceModel] = []
 
-        def add_prov(field_name: str, val: Optional[str], method: str = "direct_scrape", confidence: float = 0.85):
+        def add_prov(
+            field_name: str,
+            val: Optional[str],
+            method: str = "direct_scrape",
+            confidence: float = 0.85,
+            raw_fragment: Optional[str] = None,
+            validator_rule: Optional[str] = None,
+        ):
             if val:
                 provenances.append(
                     FieldProvenanceModel(
@@ -120,40 +127,42 @@ class ValidationService:
                         source_record_id=source_record_id,
                         extraction_method=method,
                         confidence=round(confidence, 2),
+                        raw_fragment=raw_fragment or (str(val)[:200] if val else None),
+                        validator_rule=validator_rule or "mandatory_non_empty",
                         extracted_at=now_iso,
                     )
                 )
 
         if raw.place_id:
-            add_prov("google_place_id", raw.place_id, method="url_identifier_extraction", confidence=1.0)
-        add_prov("name", clean_name, method="title_dom_selector", confidence=0.95)
-        add_prov("normalized_name", normalized_name, method="deterministic_normalization", confidence=0.95)
+            add_prov("google_place_id", raw.place_id, method="url_identifier_extraction", confidence=1.0, validator_rule="google_place_id_regex")
+        add_prov("name", clean_name, method="title_dom_selector", confidence=0.95, raw_fragment=raw.name, validator_rule="min_length_2")
+        add_prov("normalized_name", normalized_name, method="deterministic_normalization", confidence=0.95, raw_fragment=raw.name, validator_rule="nfkd_ascii_strip_suffixes")
         if raw.category:
-            add_prov("category", raw.category, method="category_button_extraction", confidence=0.85)
+            add_prov("category", raw.category, method="category_button_extraction", confidence=0.85, raw_fragment=raw.category)
         if raw.address:
-            add_prov("address", raw.address, method="address_dom_extraction", confidence=0.80)
+            add_prov("address", raw.address, method="address_dom_extraction", confidence=0.80, raw_fragment=raw.address)
         if parsed_addr.get("street"):
-            add_prov("street", parsed_addr["street"], method="address_heuristics_parsing", confidence=0.75)
+            add_prov("street", parsed_addr["street"], method="address_heuristics_parsing", confidence=0.75, raw_fragment=raw.address, validator_rule="thoroughfare_or_premise_token")
         if parsed_addr.get("locality"):
-            add_prov("locality", parsed_addr["locality"], method="address_heuristics_parsing", confidence=0.75)
+            add_prov("locality", parsed_addr["locality"], method="address_heuristics_parsing", confidence=0.75, raw_fragment=raw.address, validator_rule="generic_locality_token")
         if parsed_addr.get("postal_code"):
-            add_prov("postal_code", parsed_addr["postal_code"], method="pin_regex_validation", confidence=0.90)
+            add_prov("postal_code", parsed_addr["postal_code"], method="pin_regex_validation", confidence=0.90, raw_fragment=raw.address, validator_rule="indian_pin_6_digits")
         if parsed_addr.get("state"):
-            add_prov("state", parsed_addr["state"], method="state_dictionary_matching", confidence=0.90)
+            add_prov("state", parsed_addr["state"], method="state_dictionary_matching", confidence=0.90, raw_fragment=raw.address, validator_rule="indian_state_canonical_dict")
         if raw.phone:
-            add_prov("phone", raw.phone, method="phone_dom_extraction", confidence=0.85)
+            add_prov("phone", raw.phone, method="phone_dom_extraction", confidence=0.85, raw_fragment=raw.phone)
         if norm_phone:
             phone_conf = 0.95 if phone_status == "FOUND" else 0.75
-            add_prov("normalized_phone", norm_phone, method="phone_normalization_e164", confidence=phone_conf)
+            add_prov("normalized_phone", norm_phone, method="phone_normalization_e164", confidence=phone_conf, raw_fragment=raw.phone, validator_rule="phonenumbers_e164_in")
         if norm_url or raw.website:
-            add_prov("website", norm_url or raw.website, method="authority_link_extraction", confidence=0.85)
+            add_prov("website", norm_url or raw.website, method="authority_link_extraction", confidence=0.85, raw_fragment=raw.website)
         if website_domain:
-            add_prov("website_domain", website_domain, method="url_domain_canonicalization", confidence=0.90)
+            add_prov("website_domain", website_domain, method="url_domain_canonicalization", confidence=0.90, raw_fragment=raw.website, validator_rule="urlparse_strip_www")
         if lat is not None and lon is not None:
-            add_prov("coordinates", f"{lat},{lon}", method="coordinate_url_parsing", confidence=0.90)
+            add_prov("coordinates", f"{lat},{lon}", method="coordinate_url_parsing", confidence=0.90, validator_rule="wgs84_bounds_check")
         if clean_rating is not None:
-            add_prov("rating", str(clean_rating), method="rating_metric_extraction", confidence=0.90)
+            add_prov("rating", str(clean_rating), method="rating_metric_extraction", confidence=0.90, validator_rule="float_0_to_5")
         if clean_reviews is not None:
-            add_prov("review_count", str(clean_reviews), method="reviews_metric_extraction", confidence=0.90)
+            add_prov("review_count", str(clean_reviews), method="reviews_metric_extraction", confidence=0.90, validator_rule="positive_int")
 
         return business, provenances, errors

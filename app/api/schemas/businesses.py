@@ -11,6 +11,8 @@ class FieldProvenanceResponse(BaseModel):
     source_url: Optional[str]
     extraction_method: Optional[str]
     confidence: Optional[float]
+    raw_fragment: Optional[str] = None
+    validator_rule: Optional[str] = None
     extracted_at: str
 
     model_config = {"from_attributes": True}

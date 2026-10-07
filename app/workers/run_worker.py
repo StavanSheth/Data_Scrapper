@@ -13,31 +13,18 @@ from app.database.repositories.source_record_repository import SourceRecordRepos
 from app.database.repositories.business_repository import BusinessRepository
 from app.scraping.maps.google_maps_scraper import GoogleMapsScraper
 from app.core.services.validation_service import ValidationService
+from app.core.events import event_bus
 
 logger = logging.getLogger("run_worker")
 
-# WebSocket listeners for real-time live events
-WS_LISTENERS: Dict[str, Set[Callable[[dict], None]]] = {}
-
 def register_ws_listener(run_id: str, callback: Callable[[dict], None]) -> None:
-    if run_id not in WS_LISTENERS:
-        WS_LISTENERS[run_id] = set()
-    WS_LISTENERS[run_id].add(callback)
+    event_bus.subscribe(run_id, callback)
 
 def unregister_ws_listener(run_id: str, callback: Callable[[dict], None]) -> None:
-    if run_id in WS_LISTENERS and callback in WS_LISTENERS[run_id]:
-        WS_LISTENERS[run_id].remove(callback)
+    event_bus.unsubscribe(run_id, callback)
 
 async def broadcast_event(run_id: str, event_data: dict) -> None:
-    listeners = WS_LISTENERS.get(run_id, set())
-    for cb in list(listeners):
-        try:
-            if asyncio.iscoroutinefunction(cb):
-                await cb(event_data)
-            else:
-                cb(event_data)
-        except Exception as e:
-            logger.debug(f"Error broadcasting event: {e}")
+    await event_bus.publish(run_id, event_data)
 
 class TaskManager:
     """Supervises in-process async tasks to prevent unhandled background task death."""
@@ -87,11 +74,36 @@ class RunWorker:
         """Executes the Google Maps discovery run with persistent checkpointing."""
         scraper = GoogleMapsScraper()
 
-        # Update status to RUNNING in database
+        # Checkpoint resumption: query previously extracted records and progress
+        existing_place_ids: set[str] = set()
+        existing_urls: set[str] = set()
+        already_saved = 0
+        already_failed = 0
+        already_discovered = 0
+
         with get_db_context() as db:
+            src_repo = SourceRecordRepository(db)
+            existing_place_ids, existing_urls = src_repo.get_existing_identifiers_for_run(run_id)
+
             run_repo = RunRepository(db)
+            run_model = run_repo.get_by_id(run_id)
+            if run_model:
+                already_saved = run_model.records_saved or 0
+                already_failed = run_model.records_failed or 0
+                already_discovered = run_model.records_discovered or 0
+
             now_iso = datetime.now(timezone.utc).isoformat()
-            run_repo.update_status(run_id, status="RUNNING", started_at=now_iso)
+            run_repo.update_status(
+                run_id,
+                status="RUNNING",
+                started_at=run_model.started_at if run_model and run_model.started_at else now_iso,
+            )
+
+        discovered = already_discovered
+        saved = already_saved
+        failed = already_failed
+        error_msg = None
+        remaining_limit = max(0, limit - saved)
 
         await broadcast_event(run_id, {
             "event": "run.started",
@@ -100,12 +112,8 @@ class RunWorker:
             "city": city,
             "category": category,
             "limit": limit,
+            "resumed_from": saved,
         })
-
-        discovered = 0
-        saved = 0
-        failed = 0
-        error_msg = None
 
         def is_cancelled() -> bool:
             # Query SQLite database state directly for persistent cancellation
@@ -117,143 +125,146 @@ class RunWorker:
                 return False
 
         try:
-            # Stream records from scraper
-            async for raw_record in scraper.scrape(
-                city=city,
-                category=category,
-                limit=limit,
-                run_id=run_id,
-                cancel_check=is_cancelled,
-            ):
-                if is_cancelled():
-                    break
+            if remaining_limit > 0:
+                # Stream records from scraper resuming from checkpoint
+                async for raw_record in scraper.scrape(
+                    city=city,
+                    category=category,
+                    limit=remaining_limit,
+                    run_id=run_id,
+                    cancel_check=is_cancelled,
+                    initial_seen_place_ids=existing_place_ids,
+                    initial_seen_urls=existing_urls,
+                ):
+                    if is_cancelled():
+                        break
 
-                discovered += 1
-                source_record_id = f"src_{uuid.uuid4().hex[:12]}"
+                    discovered += 1
+                    source_record_id = f"src_{uuid.uuid4().hex[:12]}"
 
-                # 1. Store Source Record (Raw Data Retention)
-                with get_db_context() as db:
-                    src_repo = SourceRecordRepository(db)
-                    src_model = SourceRecordModel(
-                        id=source_record_id,
-                        run_id=run_id,
-                        platform_id=None,
-                        source_type="GOOGLE",
-                        source_url=raw_record.profile_url,
-                        external_id=raw_record.place_id,
-                        raw_name=raw_record.name,
-                        raw_address=raw_record.address,
-                        raw_phone=raw_record.phone,
-                        raw_email=None,
-                        raw_website=raw_record.website,
-                        raw_category=raw_record.category,
-                        raw_latitude=raw_record.latitude,
-                        raw_longitude=raw_record.longitude,
-                        raw_rating=raw_record.rating,
-                        raw_review_count=raw_record.review_count,
-                        raw_payload=json.dumps(raw_record.raw_payload),
-                        extraction_status=raw_record.status or "SUCCESS",
-                        scraped_at=raw_record.scraped_at,
-                    )
-                    src_repo.create(src_model)
+                    # 1. Store Source Record (Raw Data Retention)
+                    with get_db_context() as db:
+                        src_repo = SourceRecordRepository(db)
+                        src_model = SourceRecordModel(
+                            id=source_record_id,
+                            run_id=run_id,
+                            platform_id=None,
+                            source_type="GOOGLE",
+                            source_url=raw_record.profile_url,
+                            external_id=raw_record.place_id,
+                            raw_name=raw_record.name,
+                            raw_address=raw_record.address,
+                            raw_phone=raw_record.phone,
+                            raw_email=None,
+                            raw_website=raw_record.website,
+                            raw_category=raw_record.category,
+                            raw_latitude=raw_record.latitude,
+                            raw_longitude=raw_record.longitude,
+                            raw_rating=raw_record.rating,
+                            raw_review_count=raw_record.review_count,
+                            raw_payload=json.dumps(raw_record.raw_payload),
+                            extraction_status=raw_record.status or "SUCCESS",
+                            scraped_at=raw_record.scraped_at,
+                        )
+                        src_repo.create(src_model)
 
-                if raw_record.status == "EXTRACTION_FAILED":
-                    failed += 1
-                    logger.warning(
-                        "Scraper-level extraction failure for run %s: %s",
-                        run_id,
-                        raw_record.raw_payload.get("error") if raw_record.raw_payload else "Unknown scraper error",
-                    )
-                else:
-                    # 2. Normalize and Validate
-                    business, provenances, val_errors = self.validation_service.process_raw_record(
-                        raw=raw_record,
-                        run_id=run_id,
-                        source_record_id=source_record_id,
-                        default_city=city,
-                    )
-
-                    if not business or val_errors:
+                    if raw_record.status == "EXTRACTION_FAILED":
                         failed += 1
+                        logger.warning(
+                            "Scraper-level extraction failure for run %s: %s",
+                            run_id,
+                            raw_record.raw_payload.get("error") if raw_record.raw_payload else "Unknown scraper error",
+                        )
                     else:
-                        # 3. Deduplication Check and Save
-                        with get_db_context() as db:
-                            biz_repo = BusinessRepository(db)
-                            duplicate = biz_repo.find_duplicate(
-                                run_id=run_id,
-                                google_place_id=business.google_place_id,
-                                normalized_name=business.normalized_name,
-                                city=business.city,
-                                phone=business.phone,
-                                normalized_phone=business.normalized_phone,
-                                website_domain=business.website_domain,
-                                postal_code=business.postal_code,
-                                address=business.address,
-                            )
+                        # 2. Normalize and Validate
+                        business, provenances, val_errors = self.validation_service.process_raw_record(
+                            raw=raw_record,
+                            run_id=run_id,
+                            source_record_id=source_record_id,
+                            default_city=city,
+                        )
 
-                            if not duplicate:
-                                biz_model = BusinessModel(
-                                    id=business.business_id,
+                        if not business or val_errors:
+                            failed += 1
+                        else:
+                            # 3. Deduplication Check and Save
+                            with get_db_context() as db:
+                                biz_repo = BusinessRepository(db)
+                                duplicate = biz_repo.find_duplicate(
                                     run_id=run_id,
-                                    source=business.source,
-                                    source_record_id=source_record_id,
-                                    name=business.name,
+                                    google_place_id=business.google_place_id,
                                     normalized_name=business.normalized_name,
-                                    category=business.category,
-                                    subcategory=business.subcategory,
-                                    address=business.address,
-                                    street=business.street,
-                                    locality=business.locality,
                                     city=business.city,
-                                    state=business.state,
-                                    postal_code=business.postal_code,
-                                    country=business.country,
-                                    latitude=business.latitude,
-                                    longitude=business.longitude,
                                     phone=business.phone,
                                     normalized_phone=business.normalized_phone,
-                                    email=business.email,
-                                    website=business.website,
                                     website_domain=business.website_domain,
-                                    website_status=business.website_status,
-                                    rating=business.rating,
-                                    review_count=business.review_count,
-                                    google_place_id=business.google_place_id,
-                                    google_profile_url=business.google_profile_url,
-                                    opening_hours=business.opening_hours,
-                                    status=business.status,
-                                    created_at=business.created_at,
-                                    updated_at=business.updated_at,
+                                    postal_code=business.postal_code,
+                                    address=business.address,
                                 )
-                                biz_repo.create_with_provenances(biz_model, provenances)
-                                saved += 1
-                            else:
-                                # Already exists in current run, counted as processed
-                                pass
 
-                # Update run progress counts in SQLite
-                with get_db_context() as db:
-                    run_repo = RunRepository(db)
-                    run_repo.update_counts(
-                        run_id=run_id,
-                        discovered=discovered,
-                        saved=saved,
-                        failed=failed,
-                    )
+                                if not duplicate:
+                                    biz_model = BusinessModel(
+                                        id=business.business_id,
+                                        run_id=run_id,
+                                        source=business.source,
+                                        source_record_id=source_record_id,
+                                        name=business.name,
+                                        normalized_name=business.normalized_name,
+                                        category=business.category,
+                                        subcategory=business.subcategory,
+                                        address=business.address,
+                                        street=business.street,
+                                        locality=business.locality,
+                                        city=business.city,
+                                        state=business.state,
+                                        postal_code=business.postal_code,
+                                        country=business.country,
+                                        latitude=business.latitude,
+                                        longitude=business.longitude,
+                                        phone=business.phone,
+                                        normalized_phone=business.normalized_phone,
+                                        email=business.email,
+                                        website=business.website,
+                                        website_domain=business.website_domain,
+                                        website_status=business.website_status,
+                                        rating=business.rating,
+                                        review_count=business.review_count,
+                                        google_place_id=business.google_place_id,
+                                        google_profile_url=business.google_profile_url,
+                                        opening_hours=business.opening_hours,
+                                        status=business.status,
+                                        created_at=business.created_at,
+                                        updated_at=business.updated_at,
+                                    )
+                                    biz_repo.create_with_provenances(biz_model, provenances)
+                                    saved += 1
+                                else:
+                                    # Already exists in current run, counted as processed
+                                    pass
 
-                # Broadcast live progress accurately: (saved + failed) / limit
-                total_processed = saved + failed
-                pct = int((total_processed / max(limit, 1)) * 100)
-                await broadcast_event(run_id, {
-                    "event": "run.progress",
-                    "run_id": run_id,
-                    "status": "RUNNING",
-                    "stage": "DISCOVERING_GOOGLE",
-                    "discovered": discovered,
-                    "saved": saved,
-                    "failed": failed,
-                    "percentage": min(pct, 100),
-                })
+                    # Update run progress counts in SQLite
+                    with get_db_context() as db:
+                        run_repo = RunRepository(db)
+                        run_repo.update_counts(
+                            run_id=run_id,
+                            discovered=discovered,
+                            saved=saved,
+                            failed=failed,
+                        )
+
+                    # Broadcast live progress accurately: (saved + failed) / limit
+                    total_processed = saved + failed
+                    pct = int((total_processed / max(limit, 1)) * 100)
+                    await broadcast_event(run_id, {
+                        "event": "run.progress",
+                        "run_id": run_id,
+                        "status": "RUNNING",
+                        "stage": "DISCOVERING_GOOGLE",
+                        "discovered": discovered,
+                        "saved": saved,
+                        "failed": failed,
+                        "percentage": min(pct, 100),
+                    })
 
         except asyncio.CancelledError:
             # Task cancellation requested

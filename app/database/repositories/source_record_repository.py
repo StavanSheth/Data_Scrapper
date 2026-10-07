@@ -35,3 +35,14 @@ class SourceRecordRepository:
             .limit(limit)
             .all()
         )
+
+    def get_existing_identifiers_for_run(self, run_id: str) -> tuple[set[str], set[str]]:
+        """Returns sets of (place_ids, source_urls) previously discovered for checkpoint resumption."""
+        records = (
+            self.db.query(SourceRecordModel.external_id, SourceRecordModel.source_url)
+            .filter(SourceRecordModel.run_id == run_id)
+            .all()
+        )
+        place_ids = {r[0] for r in records if r[0]}
+        urls = {r[1] for r in records if r[1]}
+        return place_ids, urls
