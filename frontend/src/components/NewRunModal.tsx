@@ -160,27 +160,38 @@ export const NewRunModal: React.FC<Props> = ({ isOpen, onClose, onSubmit }) => {
             </div>
           </div>
 
-          {/* Confidence Threshold */}
-          <div>
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="text-xs font-medium text-slate-300 uppercase tracking-wider flex items-center space-x-1.5">
-                <Sliders className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Match Confidence Threshold</span>
-              </label>
-              <span className="text-xs font-bold text-emerald-400 font-mono">{threshold}%</span>
-            </div>
-            <input
-              type="range"
-              min="50"
-              max="95"
-              step="5"
-              value={threshold}
-              onChange={(e) => setThreshold(Number(e.target.value))}
-              className="w-full accent-emerald-500 bg-slate-950 rounded-lg cursor-pointer h-2"
-            />
-            <p className="text-[11px] text-slate-500 mt-1">
-              {threshold >= 90 ? 'Strict validation' : threshold >= 80 ? 'Balanced matching (Recommended)' : 'Permissive matching'}
-            </p>
+          {/* Advanced / Future Slice Configuration */}
+          <div className="pt-2 border-t border-slate-800/60">
+            <details className="group">
+              <summary className="text-xs text-slate-400 hover:text-slate-200 cursor-pointer flex items-center justify-between py-1 list-none">
+                <span className="flex items-center space-x-1.5 font-medium">
+                  <Sliders className="w-3.5 h-3.5 text-slate-400 group-hover:text-emerald-400 transition-colors" />
+                  <span>Advanced Settings</span>
+                  <span className="text-[10px] bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded">Slice 2+</span>
+                </span>
+                <span className="text-[11px] text-slate-500 group-open:hidden">Match threshold: {threshold}%</span>
+              </summary>
+              <div className="mt-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-medium text-slate-300">
+                    Entity Match Threshold
+                  </label>
+                  <span className="text-xs font-bold text-emerald-400 font-mono">{threshold}%</span>
+                </div>
+                <input
+                  type="range"
+                  min="50"
+                  max="95"
+                  step="5"
+                  value={threshold}
+                  onChange={(e) => setThreshold(Number(e.target.value))}
+                  className="w-full accent-emerald-500 bg-slate-950 rounded-lg cursor-pointer h-2"
+                />
+                <p className="text-[11px] text-slate-500">
+                  Pre-configured threshold for cross-platform entity matching in Slice 2. In Slice 1, all discovered records are preserved in canonical storage.
+                </p>
+              </div>
+            </details>
           </div>
 
           {/* Buttons */}

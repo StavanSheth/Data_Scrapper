@@ -19,15 +19,31 @@ class GoogleMapsParser:
         lat: Optional[float] = None
         lon: Optional[float] = None
 
-        # Extract Place ID (e.g. ChIJ...)
+        # Extract Place ID using multi-format cascade
+        # 1. Standard protobuf field 19 string (ChIJ...)
         pid_match = re.search(r"19s(ChIJ[\w-]+)", url)
         if pid_match:
             place_id = pid_match.group(1)
         else:
-            # Fallback to hex CID: 1s0x...:0x...
-            cid_match = re.search(r"1s(0x[0-9a-fA-F]+:0x[0-9a-fA-F]+)", url)
-            if cid_match:
-                place_id = cid_match.group(1)
+            # 2. Query param place_id=...
+            param_match = re.search(r"[?&]place_id=([a-zA-Z0-9_-]+)", url)
+            if param_match:
+                place_id = param_match.group(1)
+            else:
+                # 3. Query param ftid=...
+                ftid_match = re.search(r"[?&]ftid=([0-9a-zA-Z_:-]+)", url)
+                if ftid_match:
+                    place_id = ftid_match.group(1)
+                else:
+                    # 4. Hex CID: 1s0x...:0x...
+                    cid_match = re.search(r"1s(0x[0-9a-fA-F]+:0x[0-9a-fA-F]+)", url)
+                    if cid_match:
+                        place_id = cid_match.group(1)
+                    elif "/maps/place/" in url:
+                        # 5. Deterministic slug extraction if Google changes parameter format
+                        slug_match = re.search(r"/maps/place/([^/@?]+)", url)
+                        if slug_match:
+                            place_id = f"slug_{slug_match.group(1)[:40]}"
 
         # Extract coordinates: !3d19.1701936!4d72.9618542
         coord_match = re.search(r"!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)", url)

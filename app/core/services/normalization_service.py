@@ -174,15 +174,19 @@ class NormalizationService:
         "ap": "Andhra Pradesh",
     }
 
-    LOCALITY_INDICATORS = (
+    # Generic morphological and administrative division tokens valid across all Indian states/cities
+    GENERIC_LOCALITY_TOKENS = (
         "nagar", "colony", "layout", "enclave", "extension", "extn", "sector",
-        "block", "phase", "east", "west", "circle", "chowk", "bazaar", "market",
-        "complex", "plaza", "heights", "tower", "towers", "bhavan", "wadi", "pada",
-        "bandra", "andheri", "juhu", "mulund", "borivali", "kandivali", "malad",
-        "goregaon", "powai", "kurla", "ghatkopar", "dadar", "worli", "colaba",
-        "chembur", "vashi", "nerul", "kharghar", "thane", "koramangala",
-        "indiranagar", "whitefield", "hsr", "btm", "jayanagar", "electronic city",
-        "connaught place", "saket", "karol bagh", "lajpat nagar", "rohini", "dwarka"
+        "block", "phase", "ward", "mohalla", "bazaar", "market", "mandi",
+        "chowk", "circle", "corner", "naka", "wadi", "pada", "gaon", "pur", "ganj",
+        "peth", "kuppam", "halli", "cheri", "palli", "basti", "midc", "gidc",
+        "kiadb", "estate", "industrial area", "tech park", "sez", "complex",
+        "plaza", "heights", "tower", "towers", "bhavan", "bhawan", "east",
+        "west", "north", "south", "central"
+    )
+
+    THOROUGHFARE_TOKENS = (
+        "road", "rd", "marg", "street", "st", "lane", "gali", "cross", "highway", "path", "flyover"
     )
 
     @classmethod
@@ -270,7 +274,11 @@ class NormalizationService:
         # 6. Assign Street and Locality intelligently
         if len(content_parts) == 1:
             part = content_parts[0]
-            if any(ind in part.lower() for ind in cls.LOCALITY_INDICATORS) and not re.search(r"\b(shop|flat|building|plot|floor|no\.)\b", part, re.IGNORECASE):
+            is_thoroughfare = any(ind in part.lower() for ind in cls.THOROUGHFARE_TOKENS)
+            is_premise = bool(re.search(r"\b(shop|flat|building|plot|floor|no\.)\b", part, re.IGNORECASE))
+            if is_thoroughfare or is_premise:
+                result["street"] = part
+            elif any(ind in part.lower() for ind in cls.GENERIC_LOCALITY_TOKENS):
                 result["locality"] = part
             else:
                 result["street"] = part
@@ -278,11 +286,11 @@ class NormalizationService:
             result["street"] = content_parts[0]
             result["locality"] = content_parts[1]
         elif len(content_parts) >= 3:
-            # Check for locality keywords in the tail
+            # Check for generic locality keywords in the tail
             # e.g., parts: ["Shop No. 3, 4, 5", "Abundance Building", "90 Feet Rd", "Deendayal Nagar", "Mulund East"]
             # Locate split point between street/building descriptors and locality
             split_idx = len(content_parts) - 1
-            if len(content_parts) >= 4 and any(ind in content_parts[-2].lower() for ind in cls.LOCALITY_INDICATORS):
+            if len(content_parts) >= 4 and any(ind in content_parts[-2].lower() for ind in cls.GENERIC_LOCALITY_TOKENS):
                 split_idx = len(content_parts) - 2
 
             result["street"] = ", ".join(content_parts[:split_idx])

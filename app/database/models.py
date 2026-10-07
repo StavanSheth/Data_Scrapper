@@ -74,8 +74,15 @@ class SourceRecordModel(Base):
     businesses = relationship("BusinessModel", back_populates="source_record")
 
 
+from sqlalchemy import Index
+
 class BusinessModel(Base):
     __tablename__ = "businesses"
+    __table_args__ = (
+        Index("ix_businesses_run_name", "run_id", "normalized_name"),
+        Index("ix_businesses_run_created", "run_id", "created_at"),
+        Index("ix_businesses_run_city", "run_id", "city"),
+    )
 
     id = Column(String, primary_key=True, index=True)
     run_id = Column(String, ForeignKey("runs.id"), nullable=False, index=True)

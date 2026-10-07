@@ -38,14 +38,16 @@ export const RunMonitor: React.FC<Props> = ({ run, onCancel, onViewResults }) =>
     }
   }, [run.started_at, run.completed_at, run.status]);
 
-  const percentage = Math.min(
-    100,
-    run.requested_limit > 0
-      ? Math.round((run.records_saved / run.requested_limit) * 100)
-      : 0
-  );
-
   const isTerminal = ['COMPLETED', 'PARTIAL', 'FAILED', 'CANCELLED'].includes(run.status);
+  const totalProcessed = (run.records_saved || 0) + (run.records_failed || 0);
+  const percentage = isTerminal
+    ? 100
+    : Math.min(
+        100,
+        run.requested_limit > 0
+          ? Math.round((totalProcessed / run.requested_limit) * 100)
+          : 0
+      );
 
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl mb-6">

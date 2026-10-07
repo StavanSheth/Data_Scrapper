@@ -161,15 +161,17 @@ class BusinessRepository:
         query = self.db.query(BusinessModel).filter(BusinessModel.run_id == run_id)
 
         if search and search.strip():
-            term = f"%{search.strip()}%"
+            raw_term = search.strip()
+            prefix = f"{raw_term}%"
+            wildcard = f"%{raw_term}%"
             query = query.filter(
                 or_(
-                    BusinessModel.name.ilike(term),
-                    BusinessModel.normalized_name.ilike(term),
-                    BusinessModel.address.ilike(term),
-                    BusinessModel.city.ilike(term),
-                    BusinessModel.phone.ilike(term),
-                    BusinessModel.category.ilike(term),
+                    BusinessModel.normalized_name.like(prefix),
+                    BusinessModel.name.ilike(wildcard),
+                    BusinessModel.phone.like(prefix),
+                    BusinessModel.city.ilike(prefix),
+                    BusinessModel.address.ilike(wildcard),
+                    BusinessModel.category.ilike(wildcard),
                 )
             )
 

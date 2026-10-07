@@ -131,3 +131,17 @@ def test_not_found_handling(client):
 
     biz_res = client.get("/api/runs/run_seeded_01/businesses/nonexistent_biz")
     assert biz_res.status_code == 404
+
+def test_direct_business_route_run_scoping(client):
+    # Missing run_id query param must be rejected (422)
+    res_no_run = client.get("/api/businesses/biz_seeded_01")
+    assert res_no_run.status_code == 422
+
+    # Wrong run_id must return 404
+    res_wrong_run = client.get("/api/businesses/biz_seeded_01?run_id=wrong_run")
+    assert res_wrong_run.status_code == 404
+
+    # Correct run_id must succeed
+    res_valid = client.get("/api/businesses/biz_seeded_01?run_id=run_seeded_01")
+    assert res_valid.status_code == 200
+    assert res_valid.json()["id"] == "biz_seeded_01"

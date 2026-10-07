@@ -106,11 +106,11 @@ class GoogleMapsScraper:
                             aria_name = await link.get_attribute("aria-label")
                             business_name = aria_name or card_info.get("name") or "Unknown"
 
-                            # Detail extraction with multi-strategy fallbacks
-                            phone, phone_strat = await self._extract_phone(page, link, card_lines)
-                            address, addr_strat = await self._extract_address(page, link, card_info.get("address"))
-                            website, web_strat = await self._extract_website(page, link)
-                            rating, review_count = await self._extract_metrics(page, card_info)
+                            # Detail extraction directly from card container without mutating page state
+                            phone, phone_strat = await self._extract_phone(card_parent, card_lines)
+                            address, addr_strat = await self._extract_address(card_parent, card_lines, card_info.get("address"))
+                            website, web_strat = await self._extract_website(card_parent, link)
+                            rating, review_count = await self._extract_metrics(card_parent, card_info)
                             opening_hours = card_info.get("opening_hours")
 
                             # Store rich raw payload for complete auditability
@@ -148,9 +148,27 @@ class GoogleMapsScraper:
                             count_yielded += 1
                             yield raw_record
 
-                        except Exception:
-                            # A single record extraction failure must not crash the run
-                            continue
+                        except Exception as exc:
+                            # A failed record must NEVER be silently discarded
+                            logger.warning(
+                                "Failed extracting place record at url %s: %s",
+                                href if 'href' in locals() else 'unknown',
+                                exc,
+                                exc_info=True,
+                            )
+                            count_yielded += 1
+                            yield RawGoogleRecord(
+                                place_id=place_id if 'place_id' in locals() else None,
+                                name=business_name if ('business_name' in locals() and business_name != "Unknown") else "Failed Extraction",
+                                category=category,
+                                status="EXTRACTION_FAILED",
+                                raw_payload={
+                                    "error": str(exc),
+                                    "profile_url": href if 'href' in locals() else None,
+                                    "card_lines": card_lines if 'card_lines' in locals() else [],
+                                },
+                                profile_url=href if 'href' in locals() else None,
+                            )
 
                     # Scroll feed to load more places
                     if count_yielded < limit:
@@ -189,134 +207,106 @@ class GoogleMapsScraper:
 
     async def _extract_phone(
         self,
-        page: Page,
-        link: ElementHandle,
+        card_parent: Optional[ElementHandle],
         card_lines: List[str]
     ) -> tuple[Optional[str], str]:
-        """Extracts phone number via button, aria-label, tel: link, or card regex."""
-        # Strategy 1: Click card to check detail pane button
-        try:
-            await link.click(timeout=2500)
-            await page.wait_for_timeout(800)
-
-            phone_btn = await page.query_selector('button[data-item-id*="phone"]')
-            if phone_btn:
-                val = await phone_btn.get_attribute("aria-label")
-                phone = self.parser.clean_text_field("phone", val)
-                if phone:
-                    return phone, "button[data-item-id*='phone']"
-
-            # Strategy 2: aria-label matching
-            phone_btn2 = await page.query_selector('button[aria-label*="Phone:"], button[aria-label*="phone:"]')
-            if phone_btn2:
-                val = await phone_btn2.get_attribute("aria-label")
-                phone = self.parser.clean_text_field("phone", val)
-                if phone:
-                    return phone, "button[aria-label*=phone]"
-
-            # Strategy 3: tel: link
-            tel_link = await page.query_selector('a[href^="tel:"]')
-            if tel_link:
-                href = await tel_link.get_attribute("href")
-                if href:
-                    return href.replace("tel:", "").strip(), "a[href^='tel:']"
-        except Exception:
-            pass
-
-        # Strategy 4: Fallback regex in card lines for Indian phone formats
+        """Extracts phone number directly from card text lines or card DOM without mutating page state."""
+        # Strategy 1: Check card text for Indian phone patterns
         for line in card_lines:
-            m = re.search(r"(?:\+91|0)?[6-9]\d{9}\b", line)
+            m = re.search(r"(?:\+91[\s-]?)?[6-9]\d{4}[\s-]?\d{5}\b", line)
             if m:
-                return m.group(0), "card_text_regex"
+                clean = self.parser.clean_text_field("phone", m.group(0))
+                if clean:
+                    return clean, "card_text_mobile_regex"
+            m_land = re.search(r"\b0\d{2,4}[-\s]?\d{6,8}\b", line)
+            if m_land:
+                clean = self.parser.clean_text_field("phone", m_land.group(0))
+                if clean:
+                    return clean, "card_text_landline_regex"
+
+        if card_parent:
+            # Strategy 2: Call button or tel: anchor inside the card
+            try:
+                tel_link = await card_parent.query_selector('a[href^="tel:"]')
+                if tel_link:
+                    href = await tel_link.get_attribute("href")
+                    if href:
+                        return self.parser.clean_text_field("phone", href.replace("tel:", "")), "card_tel_link"
+
+                call_btn = await card_parent.query_selector('button[data-tooltip*="Call" i], button[aria-label*="Call" i], button[aria-label*="Phone" i]')
+                if call_btn:
+                    val = await call_btn.get_attribute("aria-label") or await call_btn.get_attribute("data-tooltip")
+                    phone = self.parser.clean_text_field("phone", val)
+                    if phone:
+                        return phone, "card_call_button"
+            except Exception:
+                pass
 
         return None, "none"
 
     async def _extract_address(
         self,
-        page: Page,
-        link: ElementHandle,
+        card_parent: Optional[ElementHandle],
+        card_lines: List[str],
         fallback_address: Optional[str]
     ) -> tuple[Optional[str], str]:
-        """Extracts full address via data-item-id, aria-label, tooltip, or fallback."""
-        try:
-            addr_btn = await page.query_selector('button[data-item-id="address"]')
-            if addr_btn:
-                raw_addr = await addr_btn.get_attribute("aria-label")
-                clean = self.parser.clean_text_field("address", raw_addr)
-                if clean:
-                    return clean, "button[data-item-id='address']"
-
-            addr_btn2 = await page.query_selector('button[aria-label*="Address:"], button[aria-label*="address:"]')
-            if addr_btn2:
-                raw_addr = await addr_btn2.get_attribute("aria-label")
-                clean = self.parser.clean_text_field("address", raw_addr)
-                if clean:
-                    return clean, "button[aria-label*=address]"
-        except Exception:
-            pass
-
+        """Extracts address directly from card metadata without navigating side panes."""
         if fallback_address:
-            return fallback_address, "card_parsed_fallback"
+            return fallback_address, "card_parsed_lines"
+
+        # Search in card lines for line containing address cues
+        for line in card_lines[1:]:
+            if re.search(r"\b(road|rd|marg|street|nagar|floor|complex|plaza|near|opp|behind|sector|block)\b", line, re.IGNORECASE):
+                clean = self.parser.clean_text_field("address", line)
+                if clean:
+                    return clean, "card_text_address_cue"
 
         return None, "none"
 
     async def _extract_website(
         self,
-        page: Page,
+        card_parent: Optional[ElementHandle],
         link: ElementHandle
     ) -> tuple[Optional[str], str]:
-        """Extracts website authority link via data-item-id, aria-label, or external link."""
-        try:
-            web_btn = await page.query_selector('a[data-item-id="authority"]')
-            if web_btn:
-                href = await web_btn.get_attribute("href")
-                if href:
-                    return href, "a[data-item-id='authority']"
+        """Extracts website authority link directly from card action buttons."""
+        if card_parent:
+            try:
+                web_btn = await card_parent.query_selector('a[data-value="Website"], a[aria-label*="Website" i], a[aria-label*="site" i]')
+                if web_btn:
+                    href = await web_btn.get_attribute("href")
+                    if href and not any(d in href for d in ["google.com", "gstatic.com"]):
+                        return href, "card_website_button"
 
-            web_btn2 = await page.query_selector('a[aria-label*="Website:"], a[aria-label*="website:"]')
-            if web_btn2:
-                href = await web_btn2.get_attribute("href")
-                if href:
-                    return href, "a[aria-label*=website]"
-
-            # Strategy 3: Any non-Google external authority link in detail pane
-            ext_links = await page.query_selector_all('div[role="main"] a[href^="http"]')
-            for el in ext_links:
-                h = await el.get_attribute("href")
-                if h and not any(d in h for d in ["google.com", "gstatic.com", "googleadservices"]):
-                    return h, "external_anchor_heuristic"
-        except Exception:
-            pass
+                # Check external anchor on the card
+                anchors = await card_parent.query_selector_all('a[href^="http"]')
+                for a in anchors:
+                    h = await a.get_attribute("href")
+                    if h and not any(d in h for d in ["google.com", "gstatic.com", "googleadservices"]):
+                        return h, "card_external_anchor"
+            except Exception:
+                pass
 
         return None, "none"
 
     async def _extract_metrics(
         self,
-        page: Page,
+        card_parent: Optional[ElementHandle],
         card_info: Dict[str, Any]
     ) -> tuple[Optional[float], Optional[int]]:
-        """Extracts rating and review count with multi-strategy fallbacks."""
+        """Extracts rating and review count from card text and aria labels."""
         rating = card_info.get("rating")
         review_count = card_info.get("review_count")
 
-        if rating is None:
+        if (rating is None or review_count is None) and card_parent:
             try:
-                rating_el = await page.query_selector('span[aria-label*="stars"], span[aria-label*="star"]')
+                rating_el = await card_parent.query_selector('span[aria-label*="stars" i], span[aria-label*="star" i]')
                 if rating_el:
                     r_text = await rating_el.get_attribute("aria-label")
                     r_match = re.search(r"(\d+\.\d+)", r_text or "")
-                    if r_match:
+                    if r_match and rating is None:
                         rating = float(r_match.group(1))
-            except Exception:
-                pass
-
-        if review_count is None:
-            try:
-                rev_el = await page.query_selector('button[aria-label*="reviews"]')
-                if rev_el:
-                    rev_text = await rev_el.get_attribute("aria-label")
-                    rev_match = re.search(r"([\d,]+)\s+reviews", rev_text or "")
-                    if rev_match:
+                    rev_match = re.search(r"([\d,]+)\s+reviews?", r_text or "", re.IGNORECASE)
+                    if rev_match and review_count is None:
                         review_count = int(rev_match.group(1).replace(",", ""))
             except Exception:
                 pass

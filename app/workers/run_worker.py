@@ -157,71 +157,79 @@ class RunWorker:
                     )
                     src_repo.create(src_model)
 
-                # 2. Normalize and Validate
-                business, provenances, val_errors = self.validation_service.process_raw_record(
-                    raw=raw_record,
-                    run_id=run_id,
-                    source_record_id=source_record_id,
-                    default_city=city,
-                )
-
-                if not business or val_errors:
+                if raw_record.status == "EXTRACTION_FAILED":
                     failed += 1
+                    logger.warning(
+                        "Scraper-level extraction failure for run %s: %s",
+                        run_id,
+                        raw_record.raw_payload.get("error") if raw_record.raw_payload else "Unknown scraper error",
+                    )
                 else:
-                    # 3. Deduplication Check and Save
-                    with get_db_context() as db:
-                        biz_repo = BusinessRepository(db)
-                        duplicate = biz_repo.find_duplicate(
-                            run_id=run_id,
-                            google_place_id=business.google_place_id,
-                            normalized_name=business.normalized_name,
-                            city=business.city,
-                            phone=business.phone,
-                            normalized_phone=business.normalized_phone,
-                            website_domain=business.website_domain,
-                            postal_code=business.postal_code,
-                            address=business.address,
-                        )
+                    # 2. Normalize and Validate
+                    business, provenances, val_errors = self.validation_service.process_raw_record(
+                        raw=raw_record,
+                        run_id=run_id,
+                        source_record_id=source_record_id,
+                        default_city=city,
+                    )
 
-                        if not duplicate:
-                            biz_model = BusinessModel(
-                                id=business.business_id,
+                    if not business or val_errors:
+                        failed += 1
+                    else:
+                        # 3. Deduplication Check and Save
+                        with get_db_context() as db:
+                            biz_repo = BusinessRepository(db)
+                            duplicate = biz_repo.find_duplicate(
                                 run_id=run_id,
-                                source=business.source,
-                                source_record_id=source_record_id,
-                                name=business.name,
+                                google_place_id=business.google_place_id,
                                 normalized_name=business.normalized_name,
-                                category=business.category,
-                                subcategory=business.subcategory,
-                                address=business.address,
-                                street=business.street,
-                                locality=business.locality,
                                 city=business.city,
-                                state=business.state,
-                                postal_code=business.postal_code,
-                                country=business.country,
-                                latitude=business.latitude,
-                                longitude=business.longitude,
                                 phone=business.phone,
                                 normalized_phone=business.normalized_phone,
-                                email=business.email,
-                                website=business.website,
                                 website_domain=business.website_domain,
-                                website_status=business.website_status,
-                                rating=business.rating,
-                                review_count=business.review_count,
-                                google_place_id=business.google_place_id,
-                                google_profile_url=business.google_profile_url,
-                                opening_hours=business.opening_hours,
-                                status=business.status,
-                                created_at=business.created_at,
-                                updated_at=business.updated_at,
+                                postal_code=business.postal_code,
+                                address=business.address,
                             )
-                            biz_repo.create_with_provenances(biz_model, provenances)
-                            saved += 1
-                        else:
-                            # Already exists in current run, counted as processed
-                            pass
+
+                            if not duplicate:
+                                biz_model = BusinessModel(
+                                    id=business.business_id,
+                                    run_id=run_id,
+                                    source=business.source,
+                                    source_record_id=source_record_id,
+                                    name=business.name,
+                                    normalized_name=business.normalized_name,
+                                    category=business.category,
+                                    subcategory=business.subcategory,
+                                    address=business.address,
+                                    street=business.street,
+                                    locality=business.locality,
+                                    city=business.city,
+                                    state=business.state,
+                                    postal_code=business.postal_code,
+                                    country=business.country,
+                                    latitude=business.latitude,
+                                    longitude=business.longitude,
+                                    phone=business.phone,
+                                    normalized_phone=business.normalized_phone,
+                                    email=business.email,
+                                    website=business.website,
+                                    website_domain=business.website_domain,
+                                    website_status=business.website_status,
+                                    rating=business.rating,
+                                    review_count=business.review_count,
+                                    google_place_id=business.google_place_id,
+                                    google_profile_url=business.google_profile_url,
+                                    opening_hours=business.opening_hours,
+                                    status=business.status,
+                                    created_at=business.created_at,
+                                    updated_at=business.updated_at,
+                                )
+                                biz_repo.create_with_provenances(biz_model, provenances)
+                                saved += 1
+                            else:
+                                # Already exists in current run, counted as processed
+                                pass
 
                 # Update run progress counts in SQLite
                 with get_db_context() as db:
